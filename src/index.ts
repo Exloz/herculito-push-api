@@ -74,15 +74,6 @@ const logInfo = (payload: Record<string, unknown>): void => {
   );
 };
 
-const logError = (payload: Record<string, unknown>): void => {
-  console.error(
-    JSON.stringify({
-      level: 'error',
-      ts: new Date().toISOString(),
-      ...payload
-    })
-  );
-};
 
 const logRequestIn = (meta: RequestLogMeta): void => {
   logInfo({
@@ -147,7 +138,7 @@ const schedulerTick = async (): Promise<void> => {
         markJobFailed(db, job.id);
       }
 
-      console.warn('Failed to send push', { statusCode });
+
     }
   }
 };
@@ -258,6 +249,19 @@ Bun.serve({
     const startedAtMs = Date.now();
     const url = new URL(req.url);
 
+    const isHealth = req.method === 'GET' && url.pathname === '/health';
+    if (isHealth) {
+      try {
+        return await handler(req);
+      } catch (error) {
+        if (error instanceof Response) {
+          return withCors(req, error, env.allowedOrigins);
+        }
+
+        return withCors(req, json({ error: 'internal_error' }, { status: 500 }), env.allowedOrigins);
+      }
+    }
+
     const meta: RequestLogMeta = {
       requestId: globalThis.crypto?.randomUUID?.() ?? `req_${startedAtMs}_${Math.random().toString(16).slice(2)}`,
       method: req.method,
@@ -278,19 +282,9 @@ Bun.serve({
         return res;
       }
 
-      logError({
-        event: 'api_error',
-        requestId: meta.requestId,
-        method: meta.method,
-        path: meta.path,
-        errorName: error instanceof Error ? error.name : 'unknown'
-      });
-
       const res = withCors(req, json({ error: 'internal_error' }, { status: 500 }), env.allowedOrigins);
       logRequestOut(meta, res.status);
       return res;
     }
   }
 });
-
-logInfo({ event: 'startup', port: env.port, message: `herculito-push-api listening on :${env.port}` });
