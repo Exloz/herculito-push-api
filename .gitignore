@@ -1,0 +1,8 @@
+node_modules
+bun.lockb
+dist
+.env
+.data
+*.sqlite
+*.sqlite-journal
+.DS_Store
