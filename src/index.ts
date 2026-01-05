@@ -57,6 +57,53 @@ const isValidSeconds = (value: unknown): value is number => {
 
 const makeRestJobId = (uid: string, deviceId: string): string => `${uid}:${deviceId}:rest`;
 
+type RequestLogMeta = {
+  requestId: string;
+  method: string;
+  path: string;
+  startedAtMs: number;
+};
+
+const logInfo = (payload: Record<string, unknown>): void => {
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      ts: new Date().toISOString(),
+      ...payload
+    })
+  );
+};
+
+const logError = (payload: Record<string, unknown>): void => {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      ts: new Date().toISOString(),
+      ...payload
+    })
+  );
+};
+
+const logRequestIn = (meta: RequestLogMeta): void => {
+  logInfo({
+    event: 'api_in',
+    requestId: meta.requestId,
+    method: meta.method,
+    path: meta.path
+  });
+};
+
+const logRequestOut = (meta: RequestLogMeta, status: number): void => {
+  logInfo({
+    event: 'api_out',
+    requestId: meta.requestId,
+    method: meta.method,
+    path: meta.path,
+    status,
+    durationMs: Date.now() - meta.startedAtMs
+  });
+};
+
 const schedulerTick = async (): Promise<void> => {
   const now = Date.now();
   const due = getDueJobs(db, now, 20);
@@ -100,7 +147,7 @@ const schedulerTick = async (): Promise<void> => {
         markJobFailed(db, job.id);
       }
 
-      console.warn('Failed to send push', { jobId: job.id, statusCode });
+      console.warn('Failed to send push', { statusCode });
     }
   }
 };
@@ -208,18 +255,42 @@ const handler = async (req: Request): Promise<Response> => {
 Bun.serve({
   port: env.port,
   fetch: async (req: Request) => {
+    const startedAtMs = Date.now();
+    const url = new URL(req.url);
+
+    const meta: RequestLogMeta = {
+      requestId: globalThis.crypto?.randomUUID?.() ?? `req_${startedAtMs}_${Math.random().toString(16).slice(2)}`,
+      method: req.method,
+      path: url.pathname,
+      startedAtMs
+    };
+
+    logRequestIn(meta);
+
     try {
       const res = await handler(req);
+      logRequestOut(meta, res.status);
       return res;
     } catch (error) {
       if (error instanceof Response) {
-        return withCors(req, error, env.allowedOrigins);
+        const res = withCors(req, error, env.allowedOrigins);
+        logRequestOut(meta, res.status);
+        return res;
       }
 
-      console.error('Unhandled error', error);
-      return withCors(req, json({ error: 'internal_error' }, { status: 500 }), env.allowedOrigins);
+      logError({
+        event: 'api_error',
+        requestId: meta.requestId,
+        method: meta.method,
+        path: meta.path,
+        errorName: error instanceof Error ? error.name : 'unknown'
+      });
+
+      const res = withCors(req, json({ error: 'internal_error' }, { status: 500 }), env.allowedOrigins);
+      logRequestOut(meta, res.status);
+      return res;
     }
   }
 });
 
-console.log(`herculito-push-api listening on :${env.port}`);
+logInfo({ event: 'startup', port: env.port, message: `herculito-push-api listening on :${env.port}` });
