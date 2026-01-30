@@ -49,13 +49,317 @@ type CancelBody = {
   deviceId: string;
 };
 
+type MusclewikiSuggestBody = {
+  query: string;
+  limit?: number;
+};
+
+type MusclewikiVideoBody = {
+  slug: string;
+};
+
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 const isValidSeconds = (value: unknown): value is number => {
   return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 60 * 60;
 };
 
+const isValidLimit = (value: unknown): value is number => {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 20;
+};
+
+const isValidSlug = (value: unknown): value is string => {
+  return typeof value === 'string' && /^[a-z0-9-]+$/.test(value);
+};
+
 const makeRestJobId = (uid: string, deviceId: string): string => `${uid}:${deviceId}:rest`;
+
+const MUSCLEWIKI_SITEMAP_URL = 'https://musclewiki.com/sitemap.xml';
+const MUSCLEWIKI_PAGE_BASE = 'https://musclewiki.com/es-es/exercise';
+const MUSCLEWIKI_SLUG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MUSCLEWIKI_VIDEO_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+type MusclewikiCache = {
+  slugs: string[];
+  fetchedAtMs: number;
+};
+
+type MusclewikiVideoCacheEntry = {
+  fetchedAtMs: number;
+  pageUrl: string;
+  defaultVideoUrl: string;
+  variants: { url: string; kind: string }[];
+};
+
+let musclewikiSlugCache: MusclewikiCache | null = null;
+let musclewikiSlugPromise: Promise<string[]> | null = null;
+const musclewikiVideoCache = new Map<string, MusclewikiVideoCacheEntry>();
+
+const MUSCLEWIKI_STOPWORDS = new Set([
+  'de',
+  'del',
+  'la',
+  'el',
+  'los',
+  'las',
+  'un',
+  'una',
+  'unos',
+  'unas',
+  'con',
+  'sin',
+  'para',
+  'por',
+  'y',
+  'o',
+  'en',
+  'al',
+  'a'
+]);
+
+const MUSCLEWIKI_PHRASES: Array<[string, string]> = [
+  ['peso muerto', 'deadlift'],
+  ['press de banca', 'bench press'],
+  ['press banca', 'bench press'],
+  ['press militar', 'military press'],
+  ['elevaciones laterales', 'lateral raise'],
+  ['curl martillo', 'hammer curl'],
+  ['curl de biceps', 'biceps curl'],
+  ['curl de bíceps', 'biceps curl'],
+  ['extension de triceps', 'triceps extension'],
+  ['extensión de triceps', 'triceps extension']
+];
+
+const MUSCLEWIKI_TOKEN_MAP: Record<string, string> = {
+  mancuerna: 'dumbbell',
+  mancuernas: 'dumbbell',
+  barra: 'barbell',
+  polea: 'cable',
+  poleas: 'cable',
+  biceps: 'biceps',
+  triceps: 'triceps',
+  pecho: 'chest',
+  espalda: 'back',
+  pierna: 'leg',
+  piernas: 'leg',
+  hombro: 'shoulder',
+  hombros: 'shoulder',
+  press: 'press',
+  curl: 'curl',
+  dominadas: 'pull',
+  dominada: 'pull',
+  pullup: 'pull',
+  jalon: 'pulldown',
+  jalones: 'pulldown',
+  remo: 'row',
+  sentadilla: 'squat',
+  sentadillas: 'squat',
+  inclinado: 'incline',
+  declinado: 'decline',
+  martillo: 'hammer',
+  fondos: 'dip',
+  fondo: 'dip',
+  dips: 'dip'
+};
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const normalizeText = (value: string): string => {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const applyPhraseMap = (value: string): string => {
+  let output = value;
+  for (const [from, to] of MUSCLEWIKI_PHRASES) {
+    const pattern = new RegExp(`\\b${escapeRegex(normalizeText(from))}\\b`, 'g');
+    output = output.replace(pattern, to);
+  }
+  return output;
+};
+
+const tokenizeQuery = (value: string): string[] => {
+  const normalized = applyPhraseMap(normalizeText(value));
+  const rawTokens = normalized.split(/[^a-z0-9]+/g).filter(Boolean);
+  const mapped = rawTokens
+    .map((token) => MUSCLEWIKI_TOKEN_MAP[token] ?? token)
+    .filter((token) => token.length > 1 && !MUSCLEWIKI_STOPWORDS.has(token));
+  return Array.from(new Set(mapped));
+};
+
+const tokenizeSlug = (slug: string): string[] => {
+  const tokens = slug
+    .toLowerCase()
+    .split('-')
+    .map((token) => MUSCLEWIKI_TOKEN_MAP[token] ?? token)
+    .filter((token) => token.length > 1);
+  return Array.from(new Set(tokens));
+};
+
+const scoreSlug = (queryTokens: string[], slugTokens: string[]): number => {
+  if (queryTokens.length === 0 || slugTokens.length === 0) return 0;
+  const querySet = new Set(queryTokens);
+  const slugSet = new Set(slugTokens);
+  let intersection = 0;
+  for (const token of querySet) {
+    if (slugSet.has(token)) intersection += 1;
+  }
+  if (intersection === 0) return 0;
+  const union = new Set([...querySet, ...slugSet]).size;
+  let score = intersection / union;
+  if (intersection === slugSet.size) score += 0.15;
+  if (intersection === querySet.size) score += 0.1;
+  return Math.min(score, 1.2);
+};
+
+const toDisplayName = (slug: string): string => {
+  return slug
+    .split('-')
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+};
+
+const fetchMusclewikiSlugs = async (): Promise<string[]> => {
+  const res = await fetch(MUSCLEWIKI_SITEMAP_URL, {
+    headers: { 'user-agent': 'Mozilla/5.0 (compatible; HerculitoBot/1.0)' }
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch sitemap: ${res.status}`);
+  }
+  const xml = await res.text();
+  const regex = /<loc>(https?:\/\/[^<]*?\/exercise\/[^<]+)<\/loc>/g;
+  const slugs = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(xml)) !== null) {
+    const url = match[1];
+    const slug = url.split('/exercise/')[1];
+    if (!slug) continue;
+    const clean = slug.split('/')[0].toLowerCase();
+    if (clean) slugs.add(clean);
+  }
+  return Array.from(slugs.values());
+};
+
+const getMusclewikiSlugs = async (): Promise<string[]> => {
+  const now = Date.now();
+  if (musclewikiSlugCache && now - musclewikiSlugCache.fetchedAtMs < MUSCLEWIKI_SLUG_CACHE_TTL_MS) {
+    return musclewikiSlugCache.slugs;
+  }
+  if (musclewikiSlugPromise) {
+    return musclewikiSlugPromise;
+  }
+  musclewikiSlugPromise = (async () => {
+    const slugs = await fetchMusclewikiSlugs();
+    musclewikiSlugCache = { slugs, fetchedAtMs: Date.now() };
+    return slugs;
+  })();
+  try {
+    return await musclewikiSlugPromise;
+  } finally {
+    musclewikiSlugPromise = null;
+  }
+};
+
+const suggestMusclewiki = async (query: string, limit: number): Promise<Array<{ slug: string; displayName: string; score: number }>> => {
+  const slugs = await getMusclewikiSlugs();
+  const tokens = tokenizeQuery(query);
+  if (tokens.length === 0) return [];
+  const scored = slugs
+    .map((slug) => {
+      const slugTokens = tokenizeSlug(slug);
+      return {
+        slug,
+        displayName: toDisplayName(slug),
+        score: scoreSlug(tokens, slugTokens)
+      };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug))
+    .slice(0, limit);
+  return scored;
+};
+
+const parseMusclewikiVideoVariants = (urls: string[]) => {
+  return urls.map((url) => {
+    let kind = 'video';
+    try {
+      const parsed = new URL(url);
+      const match = parsed.pathname.match(/\/videos\/([^/]+)\/([^/]+)\.mp4$/);
+      if (match) {
+        const type = match[1];
+        const filename = match[2];
+        const parts = filename.split('-');
+        const gender = parts.find((part) => part === 'male' || part === 'female');
+        const angle = parts.find((part) => part === 'front' || part === 'side');
+        const labels = [type, gender, angle].filter(Boolean);
+        if (labels.length > 0) {
+          kind = labels.join(' | ');
+        }
+      }
+    } catch {
+      // keep default kind
+    }
+    return { url, kind };
+  });
+};
+
+const selectDefaultVideo = (variants: Array<{ url: string; kind: string }>): string => {
+  const scored = variants.map((variant) => {
+    let score = 0;
+    if (variant.kind.includes('unbranded')) score += 300;
+    if (variant.kind.includes('original')) score += 200;
+    if (variant.kind.includes('branded')) score += 100;
+    if (variant.kind.includes('front')) score += 20;
+    if (variant.kind.includes('side')) score += 5;
+    if (variant.kind.includes('male')) score += 2;
+    if (variant.kind.includes('female')) score += 1;
+    return { ...variant, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.url ?? variants[0]?.url ?? '';
+};
+
+const fetchMusclewikiVideos = async (slug: string): Promise<MusclewikiVideoCacheEntry> => {
+  const pageUrl = `${MUSCLEWIKI_PAGE_BASE}/${slug}`;
+  const res = await fetch(pageUrl, {
+    headers: { 'user-agent': 'Mozilla/5.0 (compatible; HerculitoBot/1.0)' }
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch exercise page: ${res.status}`);
+  }
+  const html = await res.text();
+  const regex = /https:\/\/media\.musclewiki\.com[^"'\s]+\.mp4/g;
+  const matches = html.match(regex) ?? [];
+  const uniqueUrls = Array.from(new Set(matches));
+  const variants = parseMusclewikiVideoVariants(uniqueUrls);
+  const defaultVideoUrl = selectDefaultVideo(variants);
+  if (!defaultVideoUrl) {
+    throw new Error('No videos found');
+  }
+  return {
+    fetchedAtMs: Date.now(),
+    pageUrl,
+    defaultVideoUrl,
+    variants
+  };
+};
+
+const getMusclewikiVideos = async (slug: string): Promise<MusclewikiVideoCacheEntry> => {
+  const cached = musclewikiVideoCache.get(slug);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAtMs < MUSCLEWIKI_VIDEO_CACHE_TTL_MS) {
+    return cached;
+  }
+  const entry = await fetchMusclewikiVideos(slug);
+  musclewikiVideoCache.set(slug, entry);
+  return entry;
+};
 
 type RequestLogMeta = {
   requestId: string;
@@ -238,6 +542,39 @@ const handler = async (req: Request): Promise<Response> => {
 
     const canceled = cancelJobsForDevice(db, uid, body.deviceId);
     return withCors(req, json({ ok: true, canceled }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/musclewiki/suggest') {
+    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<MusclewikiSuggestBody>(req);
+
+    if (!isNonEmptyString(body.query)) {
+      return withCors(req, json({ error: 'invalid_query' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const limit = isValidLimit(body.limit) ? body.limit : 5;
+    const suggestions = await suggestMusclewiki(body.query, limit);
+    return withCors(req, json({ suggestions }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/musclewiki/videos') {
+    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<MusclewikiVideoBody>(req);
+
+    if (!isValidSlug(body.slug)) {
+      return withCors(req, json({ error: 'invalid_slug' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const entry = await getMusclewikiVideos(body.slug);
+    return withCors(
+      req,
+      json({
+        pageUrl: entry.pageUrl,
+        defaultVideoUrl: entry.defaultVideoUrl,
+        variants: entry.variants
+      }),
+      env.allowedOrigins
+    );
   }
 
   return withCors(req, json({ error: 'not_found' }, { status: 404 }), env.allowedOrigins);
