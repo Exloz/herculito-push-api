@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { json } from './http';
 
 export interface AuthContext {
   uid: string;
@@ -21,7 +22,7 @@ const jwks = createRemoteJWKSet(
 export const requireFirebaseAuth = async (req: Request, projectId: string): Promise<AuthContext> => {
   const token = getBearerToken(req);
   if (!token) {
-    throw new Response(JSON.stringify({ error: 'missing_auth' }), { status: 401 });
+    throw json({ error: 'missing_auth' }, { status: 401 });
   }
 
   try {
@@ -42,6 +43,6 @@ export const requireFirebaseAuth = async (req: Request, projectId: string): Prom
 
     return { uid, email };
   } catch {
-    throw new Response(JSON.stringify({ error: 'invalid_auth' }), { status: 401 });
+    throw json({ error: 'invalid_auth' }, { status: 401 });
   }
 };

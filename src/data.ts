@@ -361,34 +361,49 @@ export const createExercise = (db: Database, uid: string, input: ExerciseInput):
 
 export const updateExercise = (db: Database, uid: string, exerciseId: string, updates: Partial<ExerciseInput>): void => {
   const now = Date.now();
+
+  const ownerRow = db.query<{ created_by_uid: string | null }, [string]>(`
+    SELECT created_by_uid FROM exercises WHERE id = ? LIMIT 1
+  `).get(exerciseId);
+  const isOwner = ownerRow?.created_by_uid === uid;
+  const isMusclewiki = exerciseId.startsWith('mw:');
+
   const fields: string[] = [];
   const values: Array<string | number | null> = [];
 
-  if (updates.name) {
+  if (updates.name && isOwner) {
     fields.push('name = ?');
     values.push(updates.name);
     fields.push('normalized_name = ?');
     values.push(normalizeName(updates.name));
   }
 
-  if (updates.category) {
+  if (updates.category && isOwner) {
     fields.push('category = ?');
     values.push(updates.category);
   }
 
-  if (typeof updates.description === 'string') {
+  if (typeof updates.description === 'string' && isOwner) {
     fields.push('description = ?');
     values.push(updates.description);
   }
 
-  if (typeof updates.isPublic === 'boolean') {
+  if (typeof updates.isPublic === 'boolean' && isOwner) {
     fields.push('is_public = ?');
     values.push(updates.isPublic ? 1 : 0);
   }
 
   if (updates.video) {
-    fields.push('video_json = ?');
-    values.push(toVideoJson(updates.video));
+    const canUpdateVideo = isOwner || (isMusclewiki && updates.video.slug && exerciseId === `mw:${updates.video.slug}`);
+    if (canUpdateVideo) {
+      fields.push('video_json = ?');
+      values.push(toVideoJson(updates.video));
+    }
+  }
+
+  if (updates.muscleGroup && isOwner) {
+    fields.push('muscle_group = ?');
+    values.push(updates.muscleGroup);
   }
 
   if (fields.length > 0) {
@@ -794,22 +809,35 @@ export const upsertExerciseLog = (db: Database, uid: string, input: ExerciseLogI
   );
 };
 
-export const listWorkouts = (db: Database): WorkoutInput[] => {
-  const rows = db.query<{ id: string; payload_json: string }, []>(`
-    SELECT id, payload_json FROM workouts
-  `).all();
+export const listExerciseLogsForDate = (db: Database, uid: string, date: string): unknown[] => {
+  const rows = db.query<{ payload_json: string }, [string, string]>(`
+    SELECT payload_json
+    FROM exercise_logs
+    WHERE uid = ? AND date = ?
+    ORDER BY updated_at_ms DESC
+  `).all(uid, date);
+
+  return rows
+    .map((row) => safeJsonParse<unknown>(row.payload_json))
+    .filter((value): value is unknown => value !== undefined);
+};
+
+export const listWorkouts = (db: Database, uid: string): WorkoutInput[] => {
+  const rows = db.query<{ id: string; payload_json: string }, [string]>(`
+    SELECT id, payload_json FROM workouts WHERE uid = ?
+  `).all(uid);
   return rows
     .map((row) => safeJsonParse<WorkoutInput>(row.payload_json))
     .filter((value): value is WorkoutInput => !!value && typeof value.id === 'string');
 };
 
-export const upsertWorkout = (db: Database, workout: WorkoutInput): void => {
+export const upsertWorkout = (db: Database, uid: string, workout: WorkoutInput): void => {
   const now = Date.now();
   db.query(`
-    INSERT INTO workouts (id, payload_json, created_at_ms, updated_at_ms)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
+    INSERT INTO workouts (uid, id, payload_json, created_at_ms, updated_at_ms)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(uid, id) DO UPDATE SET
       payload_json = excluded.payload_json,
       updated_at_ms = excluded.updated_at_ms
-  `).run(workout.id, JSON.stringify(workout), now, now);
+  `).run(uid, workout.id, JSON.stringify(workout), now, now);
 };

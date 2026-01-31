@@ -171,12 +171,41 @@ export const createDb = (databasePath: string): Database => {
     CREATE INDEX IF NOT EXISTS exercise_logs_exercise_idx ON exercise_logs (exercise_id);
 
     CREATE TABLE IF NOT EXISTS workouts (
-      id TEXT PRIMARY KEY,
+      uid TEXT NOT NULL,
+      id TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       created_at_ms INTEGER NOT NULL,
-      updated_at_ms INTEGER NOT NULL
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (uid, id)
     );
   `);
+
+  // Best-effort migration: older deployments had workouts(id PK) without uid.
+  try {
+    const columns = db.query<{ name: string }, []>(`PRAGMA table_info(workouts)`).all();
+    const hasUid = columns.some((col) => col.name === 'uid');
+    if (!hasUid) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS workouts_v2 (
+          uid TEXT NOT NULL,
+          id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (uid, id)
+        );
+        INSERT INTO workouts_v2 (uid, id, payload_json, created_at_ms, updated_at_ms)
+        SELECT 'system', id, payload_json, created_at_ms, updated_at_ms FROM workouts;
+        DROP TABLE workouts;
+        ALTER TABLE workouts_v2 RENAME TO workouts;
+      `);
+    }
+
+    // Ensure index for current schema.
+    db.exec(`CREATE INDEX IF NOT EXISTS workouts_uid_idx ON workouts (uid);`);
+  } catch {
+    // ignore migration failures (schema will still be created on fresh DBs)
+  }
 
   return db;
 };

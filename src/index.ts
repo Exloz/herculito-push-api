@@ -17,7 +17,8 @@ import {
   updateRoutine,
   updateSessionProgress,
   upsertExerciseLog,
-  upsertWorkout
+  upsertWorkout,
+  listExerciseLogsForDate
 } from './data';
 import {
   cancelJobsForDevice,
@@ -209,6 +210,10 @@ const isValidNumber = (value: unknown): value is number => {
 
 const isValidOptionalNumber = (value: unknown): value is number | undefined => {
   return value === undefined || isValidNumber(value);
+};
+
+const isValidDateKey = (value: unknown): value is string => {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 };
 
 const makeRestJobId = (uid: string, deviceId: string): string => `${uid}:${deviceId}:rest`;
@@ -853,7 +858,7 @@ const handler = async (req: Request): Promise<Response> => {
     const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
     const body = await getJsonBody<ExerciseLogBody>(req);
 
-    if (!isNonEmptyString(body.exerciseId) || !isNonEmptyString(body.date) || !Array.isArray(body.sets)) {
+    if (!isNonEmptyString(body.exerciseId) || !isValidDateKey(body.date) || !Array.isArray(body.sets)) {
       return withCors(req, json({ error: 'invalid_exercise_log' }, { status: 400 }), env.allowedOrigins);
     }
 
@@ -869,21 +874,31 @@ const handler = async (req: Request): Promise<Response> => {
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 
+  if (req.method === 'GET' && url.pathname === '/v1/data/exercise-logs') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const date = url.searchParams.get('date') ?? '';
+    if (!isValidDateKey(date)) {
+      return withCors(req, json({ error: 'missing_date' }, { status: 400 }), env.allowedOrigins);
+    }
+    const logs = listExerciseLogsForDate(db, uid, date);
+    return withCors(req, json({ logs }), env.allowedOrigins);
+  }
+
   if (req.method === 'GET' && url.pathname === '/v1/data/workouts') {
-    await requireFirebaseAuth(req, env.firebaseProjectId);
-    const workouts = listWorkouts(db);
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const workouts = listWorkouts(db, uid);
     return withCors(req, json({ workouts }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/workouts') {
-    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
     const body = await getJsonBody<WorkoutUpsertBody>(req);
 
     if (!body.workout || !isNonEmptyString(body.workout.id)) {
       return withCors(req, json({ error: 'invalid_workout' }, { status: 400 }), env.allowedOrigins);
     }
 
-    upsertWorkout(db, body.workout);
+    upsertWorkout(db, uid, body.workout);
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 

@@ -3,3 +3,4 @@ bun.lockb
 .git
 .DS_Store
 .env
+serviceAccount.json

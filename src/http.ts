@@ -7,13 +7,13 @@ export const json = (data: unknown, init?: ResponseInit): Response => {
 export const getJsonBody = async <T>(req: Request): Promise<T> => {
   const contentType = req.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
-    throw new Response(JSON.stringify({ error: 'invalid_content_type' }), { status: 415 });
+    throw json({ error: 'invalid_content_type' }, { status: 415 });
   }
 
   try {
     return (await req.json()) as T;
   } catch {
-    throw new Response(JSON.stringify({ error: 'invalid_json' }), { status: 400 });
+    throw json({ error: 'invalid_json' }, { status: 400 });
   }
 };
 
