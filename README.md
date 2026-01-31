@@ -84,6 +84,54 @@ Body:
 
 Cancela jobs pendientes para ese device.
 
+## API de datos (SQLite)
+
+Todos los endpoints usan el mismo header de autenticacion Firebase.
+
+Endpoints principales:
+- `GET /v1/data/exercises`
+- `POST /v1/data/exercises`
+- `POST /v1/data/exercises/update`
+- `POST /v1/data/exercises/use`
+- `GET /v1/data/routines`
+- `POST /v1/data/routines`
+- `POST /v1/data/routines/update`
+- `POST /v1/data/routines/delete`
+- `POST /v1/data/routines/use`
+- `GET /v1/data/sessions`
+- `POST /v1/data/sessions/start`
+- `POST /v1/data/sessions/progress`
+- `POST /v1/data/sessions/complete`
+- `POST /v1/data/exercise-logs`
+- `GET /v1/data/workouts`
+- `POST /v1/data/workouts`
+
+## Migracion desde Firestore
+
+Se incluye un script Bun para importar un JSON con las colecciones exportadas:
+
+```bash
+bun run migrate:json --input firestore-export.json --database /data/push.sqlite
+```
+
+El JSON debe incluir arrays con estas claves (si existen):
+- `exerciseTemplates`
+- `routines`
+- `workoutSessions`
+- `exerciseLogs`
+
+### Exportar Firestore a JSON
+
+Usa el script de export si tienes un service account de Firebase:
+
+```bash
+bun run export:firestore --service-account /ruta/serviceAccount.json --out firestore-export.json
+```
+
+Tambien puedes definir una variable de entorno en lugar del flag:
+- `FIREBASE_SERVICE_ACCOUNT_PATH`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+
 ## Cómo corre el scheduler
 
 - La API guarda jobs en SQLite con `execute_at_ms`.

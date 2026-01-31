@@ -2,6 +2,24 @@ import { loadEnv } from './env';
 import { corsPreflight, getJsonBody, json, withCors } from './http';
 import { requireFirebaseAuth } from './auth';
 import {
+  completeSession,
+  createExercise,
+  createRoutine,
+  deleteRoutine,
+  incrementExerciseUsage,
+  incrementRoutineUsage,
+  listExercises,
+  listRoutines,
+  listSessions,
+  listWorkouts,
+  startSession,
+  updateExercise,
+  updateRoutine,
+  updateSessionProgress,
+  upsertExerciseLog,
+  upsertWorkout
+} from './data';
+import {
   cancelJobsForDevice,
   createDb,
   deactivateSubscription,
@@ -58,6 +76,118 @@ type MusclewikiVideoBody = {
   slug: string;
 };
 
+type ExerciseCreateBody = {
+  name: string;
+  category: string;
+  sets: number;
+  reps: number;
+  restTime: number;
+  description?: string;
+  isPublic?: boolean;
+  createdByName?: string;
+  muscleGroup?: string;
+  video?: {
+    provider: 'musclewiki';
+    slug: string;
+    url: string;
+    pageUrl: string;
+    variants?: { url: string; kind: string }[];
+  };
+};
+
+type ExerciseUpdateBody = {
+  id: string;
+  updates: Partial<ExerciseCreateBody>;
+};
+
+type ExerciseUsageBody = {
+  id: string;
+};
+
+type RoutineCreateBody = {
+  id?: string;
+  name: string;
+  description?: string;
+  exercises: Array<{
+    id: string;
+    name: string;
+    sets: number;
+    reps: number;
+    restTime?: number;
+    video?: {
+      provider: 'musclewiki';
+      slug: string;
+      url: string;
+      pageUrl: string;
+      variants?: { url: string; kind: string }[];
+    };
+  }>;
+  isPublic?: boolean;
+  primaryMuscleGroup?: string;
+  createdByName?: string;
+};
+
+type RoutineUpdateBody = {
+  id: string;
+  updates: Partial<RoutineCreateBody>;
+};
+
+type RoutineDeleteBody = {
+  id: string;
+};
+
+type RoutineUsageBody = {
+  id: string;
+};
+
+type SessionStartBody = {
+  id?: string;
+  routineId?: string;
+  routineName: string;
+  primaryMuscleGroup?: string;
+  startedAt?: number;
+};
+
+type SessionProgressBody = {
+  sessionId: string;
+  exercises: unknown[];
+};
+
+type SessionCompleteBody = {
+  sessionId: string;
+  exercises: unknown[];
+  completedAt?: number;
+  totalDuration?: number;
+};
+
+type ExerciseLogBody = {
+  exerciseId: string;
+  date: string;
+  sets: unknown[];
+};
+
+type WorkoutUpsertBody = {
+  workout: {
+    id: string;
+    day: string;
+    name: string;
+    exercises: Array<{
+      id: string;
+      name: string;
+      sets: number;
+      reps: number;
+      restTime?: number;
+      video?: {
+        provider: 'musclewiki';
+        slug: string;
+        url: string;
+        pageUrl: string;
+        variants?: { url: string; kind: string }[];
+      };
+    }>;
+  };
+};
+
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 const isValidSeconds = (value: unknown): value is number => {
@@ -70,6 +200,14 @@ const isValidLimit = (value: unknown): value is number => {
 
 const isValidSlug = (value: unknown): value is string => {
   return typeof value === 'string' && /^[a-z0-9-]+$/.test(value);
+};
+
+const isValidNumber = (value: unknown): value is number => {
+  return typeof value === 'number' && Number.isFinite(value);
+};
+
+const isValidOptionalNumber = (value: unknown): value is number | undefined => {
+  return value === undefined || isValidNumber(value);
 };
 
 const makeRestJobId = (uid: string, deviceId: string): string => `${uid}:${deviceId}:rest`;
@@ -542,6 +680,206 @@ const handler = async (req: Request): Promise<Response> => {
 
     const canceled = cancelJobsForDevice(db, uid, body.deviceId);
     return withCors(req, json({ ok: true, canceled }), env.allowedOrigins);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/data/exercises') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const exercises = listExercises(db, uid);
+    return withCors(req, json({ exercises }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/exercises') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<ExerciseCreateBody>(req);
+
+    if (!isNonEmptyString(body.name) || !isNonEmptyString(body.category)) {
+      return withCors(req, json({ error: 'invalid_name_or_category' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    if (!isValidNumber(body.sets) || !isValidNumber(body.reps) || !isValidNumber(body.restTime)) {
+      return withCors(req, json({ error: 'invalid_defaults' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const exercise = createExercise(db, uid, {
+      name: body.name,
+      category: body.category,
+      sets: body.sets,
+      reps: body.reps,
+      restTime: body.restTime,
+      description: body.description,
+      isPublic: body.isPublic,
+      createdByName: body.createdByName,
+      muscleGroup: body.muscleGroup,
+      video: body.video
+    });
+
+    return withCors(req, json({ exercise }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/exercises/update') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<ExerciseUpdateBody>(req);
+
+    if (!isNonEmptyString(body.id)) {
+      return withCors(req, json({ error: 'invalid_exercise_id' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    updateExercise(db, uid, body.id, body.updates ?? {});
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/exercises/use') {
+    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<ExerciseUsageBody>(req);
+
+    if (!isNonEmptyString(body.id)) {
+      return withCors(req, json({ error: 'invalid_exercise_id' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    incrementExerciseUsage(db, body.id);
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/data/routines') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const routines = listRoutines(db, uid);
+    return withCors(req, json({ routines }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/routines') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<RoutineCreateBody>(req);
+
+    if (!isNonEmptyString(body.name) || !Array.isArray(body.exercises)) {
+      return withCors(req, json({ error: 'invalid_routine' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const routine = createRoutine(db, uid, body);
+    return withCors(req, json({ routine }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/routines/update') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<RoutineUpdateBody>(req);
+
+    if (!isNonEmptyString(body.id)) {
+      return withCors(req, json({ error: 'invalid_routine_id' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    updateRoutine(db, uid, body.id, body.updates ?? {});
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/routines/delete') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<RoutineDeleteBody>(req);
+
+    if (!isNonEmptyString(body.id)) {
+      return withCors(req, json({ error: 'invalid_routine_id' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    deleteRoutine(db, uid, body.id);
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/routines/use') {
+    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<RoutineUsageBody>(req);
+
+    if (!isNonEmptyString(body.id)) {
+      return withCors(req, json({ error: 'invalid_routine_id' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    incrementRoutineUsage(db, body.id);
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/data/sessions') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const sessions = listSessions(db, uid);
+    return withCors(req, json({ sessions }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/sessions/start') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<SessionStartBody>(req);
+
+    if (!isNonEmptyString(body.routineName)) {
+      return withCors(req, json({ error: 'invalid_routine_name' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    if (!isValidOptionalNumber(body.startedAt)) {
+      return withCors(req, json({ error: 'invalid_started_at' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const session = startSession(db, uid, {
+      id: body.id,
+      routineId: body.routineId,
+      routineName: body.routineName,
+      primaryMuscleGroup: body.primaryMuscleGroup,
+      startedAt: body.startedAt
+    });
+    return withCors(req, json({ session }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/sessions/progress') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<SessionProgressBody>(req);
+
+    if (!isNonEmptyString(body.sessionId) || !Array.isArray(body.exercises)) {
+      return withCors(req, json({ error: 'invalid_session' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    updateSessionProgress(db, uid, body.sessionId, body.exercises);
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/sessions/complete') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<SessionCompleteBody>(req);
+
+    if (!isNonEmptyString(body.sessionId) || !Array.isArray(body.exercises)) {
+      return withCors(req, json({ error: 'invalid_session' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const completedAt = isValidNumber(body.completedAt) ? body.completedAt : Date.now();
+    const totalDuration = isValidNumber(body.totalDuration) ? body.totalDuration : 0;
+    completeSession(db, uid, body.sessionId, body.exercises, completedAt, totalDuration);
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/exercise-logs') {
+    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<ExerciseLogBody>(req);
+
+    if (!isNonEmptyString(body.exerciseId) || !isNonEmptyString(body.date) || !Array.isArray(body.sets)) {
+      return withCors(req, json({ error: 'invalid_exercise_log' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    upsertExerciseLog(db, uid, {
+      exerciseId: body.exerciseId,
+      date: body.date,
+      sets: body.sets
+    });
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/data/workouts') {
+    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const workouts = listWorkouts(db);
+    return withCors(req, json({ workouts }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/workouts') {
+    await requireFirebaseAuth(req, env.firebaseProjectId);
+    const body = await getJsonBody<WorkoutUpsertBody>(req);
+
+    if (!body.workout || !isNonEmptyString(body.workout.id)) {
+      return withCors(req, json({ error: 'invalid_workout' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    upsertWorkout(db, body.workout);
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/musclewiki/suggest') {

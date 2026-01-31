@@ -51,6 +51,131 @@ export const createDb = (databasePath: string): Database => {
     );
 
     CREATE INDEX IF NOT EXISTS jobs_execute_at_idx ON jobs (status, execute_at_ms);
+
+    CREATE TABLE IF NOT EXISTS exercises (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      description TEXT,
+      default_sets INTEGER NOT NULL,
+      default_reps INTEGER NOT NULL,
+      default_rest_time_s INTEGER NOT NULL,
+      times_used INTEGER NOT NULL DEFAULT 0,
+      created_by_uid TEXT,
+      created_by_name TEXT,
+      is_public INTEGER NOT NULL DEFAULT 1,
+      muscle_group TEXT,
+      video_json TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS exercises_normalized_name_idx ON exercises (normalized_name);
+    CREATE INDEX IF NOT EXISTS exercises_public_idx ON exercises (is_public, created_by_uid);
+
+    CREATE TABLE IF NOT EXISTS exercise_aliases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      exercise_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      old_exercise_id TEXT,
+      old_name TEXT NOT NULL,
+      normalized_old_name TEXT NOT NULL,
+      uid TEXT,
+      confidence REAL NOT NULL,
+      created_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS exercise_aliases_old_id_idx ON exercise_aliases (old_exercise_id);
+    CREATE INDEX IF NOT EXISTS exercise_aliases_name_idx ON exercise_aliases (normalized_old_name);
+    CREATE INDEX IF NOT EXISTS exercise_aliases_uid_idx ON exercise_aliases (uid);
+
+    CREATE TABLE IF NOT EXISTS user_exercise_defaults (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uid TEXT NOT NULL,
+      exercise_id TEXT NOT NULL,
+      display_name TEXT,
+      default_sets INTEGER,
+      default_reps INTEGER,
+      default_rest_time_s INTEGER,
+      notes TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      UNIQUE(uid, exercise_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS user_exercise_defaults_uid_idx ON user_exercise_defaults (uid);
+
+    CREATE TABLE IF NOT EXISTS routines (
+      id TEXT PRIMARY KEY,
+      owner_uid TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      is_public INTEGER NOT NULL DEFAULT 1,
+      primary_muscle_group TEXT,
+      times_used INTEGER NOT NULL DEFAULT 0,
+      created_by_name TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS routines_owner_idx ON routines (owner_uid);
+    CREATE INDEX IF NOT EXISTS routines_public_idx ON routines (is_public);
+
+    CREATE TABLE IF NOT EXISTS routine_exercises (
+      id TEXT PRIMARY KEY,
+      routine_id TEXT NOT NULL,
+      exercise_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      display_name TEXT,
+      sets INTEGER NOT NULL,
+      reps INTEGER NOT NULL,
+      rest_time_s INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      UNIQUE(routine_id, position)
+    );
+
+    CREATE INDEX IF NOT EXISTS routine_exercises_routine_idx ON routine_exercises (routine_id);
+    CREATE INDEX IF NOT EXISTS routine_exercises_exercise_idx ON routine_exercises (exercise_id);
+
+    CREATE TABLE IF NOT EXISTS workout_sessions (
+      id TEXT PRIMARY KEY,
+      uid TEXT NOT NULL,
+      routine_id TEXT,
+      routine_name_snapshot TEXT NOT NULL,
+      primary_muscle_group TEXT,
+      started_at_ms INTEGER NOT NULL,
+      completed_at_ms INTEGER,
+      total_duration_min INTEGER,
+      exercises_json TEXT,
+      notes TEXT,
+      last_updated_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS workout_sessions_user_idx ON workout_sessions (uid, started_at_ms);
+
+    CREATE TABLE IF NOT EXISTS exercise_logs (
+      id TEXT PRIMARY KEY,
+      uid TEXT NOT NULL,
+      exercise_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS exercise_logs_user_idx ON exercise_logs (uid, date);
+    CREATE INDEX IF NOT EXISTS exercise_logs_exercise_idx ON exercise_logs (exercise_id);
+
+    CREATE TABLE IF NOT EXISTS workouts (
+      id TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
   `);
 
   return db;

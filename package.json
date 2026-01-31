@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "migrate:json": "bun scripts/migrate-from-json.ts",
+    "export:firestore": "bun scripts/export-firestore.ts"
   },
   "dependencies": {
     "jose": "^5.9.6",
@@ -15,6 +17,7 @@
   "devDependencies": {
     "@types/bun": "^1.2.1",
     "@types/web-push": "^3.6.4",
+    "firebase-admin": "^12.0.0",
     "typescript": "^5.7.2"
   }
 }
