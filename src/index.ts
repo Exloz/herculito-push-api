@@ -164,6 +164,7 @@ type ExerciseLogBody = {
   exerciseId: string;
   date: string;
   sets: unknown[];
+  userId?: string;
 };
 
 type WorkoutUpsertBody = {
@@ -854,6 +855,10 @@ const handler = async (req: Request): Promise<Response> => {
 
     if (!isNonEmptyString(body.exerciseId) || !isNonEmptyString(body.date) || !Array.isArray(body.sets)) {
       return withCors(req, json({ error: 'invalid_exercise_log' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    if (isNonEmptyString(body.userId) && body.userId !== uid) {
+      return withCors(req, json({ error: 'invalid_user' }, { status: 403 }), env.allowedOrigins);
     }
 
     upsertExerciseLog(db, uid, {
