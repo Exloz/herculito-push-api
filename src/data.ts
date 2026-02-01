@@ -459,12 +459,22 @@ export const listRoutines = (db: Database, uid: string): RoutineOutput[] => {
     created_by_name: string | null;
     created_at_ms: number;
     updated_at_ms: number;
-  }, [string]>(`
+  }, [string, string]>(`
     SELECT id, owner_uid, name, description, is_public, primary_muscle_group, times_used, created_by_name, created_at_ms, updated_at_ms
     FROM routines
-    WHERE owner_uid = ? OR is_public = 1
+    WHERE
+      owner_uid = ?
+      OR (
+        is_public = 1
+        AND owner_uid <> ?
+        AND owner_uid <> 'system'
+        AND (
+          created_by_name IS NULL
+          OR TRIM(created_by_name) NOT IN ('Sistema', 'Usuario')
+        )
+      )
     ORDER BY created_at_ms DESC
-  `).all(uid);
+  `).all(uid, uid);
 
   return routines.map((routine) => {
     const exercises = db.query<{
@@ -515,7 +525,7 @@ export const listRoutines = (db: Database, uid: string): RoutineOutput[] => {
 export const createRoutine = (db: Database, uid: string, input: RoutineInput): RoutineOutput => {
   const now = Date.now();
   const routineId = input.id ?? (globalThis.crypto?.randomUUID?.() ?? `${now}_${Math.random().toString(16).slice(2)}`);
-  const isPublic = input.isPublic !== false;
+  const isPublic = input.isPublic === true;
 
   db.query(`
     INSERT INTO routines (

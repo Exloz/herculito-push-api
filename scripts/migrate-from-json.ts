@@ -85,6 +85,11 @@ const parseDateMs = (value: unknown): number | null => {
   if (value instanceof Date) return value.getTime();
   if (typeof value === 'number') return value;
   if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      // Heuristic: if it's in seconds, convert; if in ms, keep.
+      return numeric < 1e12 ? numeric * 1000 : numeric;
+    }
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : null;
   }

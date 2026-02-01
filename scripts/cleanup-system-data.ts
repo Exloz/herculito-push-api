@@ -11,6 +11,8 @@ const db = createDb(databasePath);
 
 const SYSTEM_UID = 'system';
 
+// Note: we intentionally delete routines created by these generic display names.
+
 const execScalar = (sql: string, ...params: Array<string | number | null>) => {
   const row = db.query<{ value: number }, Array<string | number | null>>(sql).get(...params);
   return row?.value ?? 0;
@@ -26,6 +28,16 @@ const exercisesToDelete = execScalar(
   SYSTEM_UID
 );
 
+const junkPublicRoutinesToDelete = execScalar(
+  `
+    SELECT COUNT(1) as value
+    FROM routines
+    WHERE is_public = 1
+      AND created_by_name IS NOT NULL
+      AND TRIM(created_by_name) IN ('Sistema','Usuario')
+  `
+);
+
 db.exec('BEGIN');
 try {
   // Routines
@@ -38,6 +50,23 @@ try {
     DELETE FROM routines
     WHERE owner_uid = ?
   `).run(SYSTEM_UID);
+
+  // Junk public routines (even if user-owned)
+  db.query(`
+    DELETE FROM routine_exercises
+    WHERE routine_id IN (
+      SELECT id FROM routines
+      WHERE is_public = 1
+        AND created_by_name IS NOT NULL
+        AND TRIM(created_by_name) IN ('Sistema','Usuario')
+    )
+  `).run();
+  db.query(`
+    DELETE FROM routines
+    WHERE is_public = 1
+      AND created_by_name IS NOT NULL
+      AND TRIM(created_by_name) IN ('Sistema','Usuario')
+  `).run();
 
   // Exercises
   db.query(`
@@ -64,5 +93,6 @@ try {
 console.log('Cleanup completed:', {
   databasePath,
   deletedSystemRoutines: routinesToDelete,
-  deletedSystemExercises: exercisesToDelete
+  deletedSystemExercises: exercisesToDelete,
+  deletedJunkPublicRoutines: junkPublicRoutinesToDelete
 });

@@ -111,7 +111,7 @@ export const createDb = (databasePath: string): Database => {
       owner_uid TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
-      is_public INTEGER NOT NULL DEFAULT 1,
+      is_public INTEGER NOT NULL DEFAULT 0,
       primary_muscle_group TEXT,
       times_used INTEGER NOT NULL DEFAULT 0,
       created_by_name TEXT,

@@ -16,7 +16,7 @@ const getArgValue = (name: string): string | null => {
 
 const parseCollections = (value: string | null): string[] => {
   if (!value) {
-    return ['exerciseTemplates', 'routines', 'workoutSessions', 'exerciseLogs'];
+    return ['exerciseTemplates', 'routines', 'userRoutines', 'workouts', 'workoutSessions', 'exerciseLogs', 'exerciseHistory'];
   }
   return value
     .split(',')
