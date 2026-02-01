@@ -490,7 +490,7 @@ const MUSCLEWIKI_TOKEN_MAP: Record<string, string> = {
   acostada: 'lying',
   sentado: 'seated',
   sentada: 'seated',
-  de pie: 'standing',
+  'de pie': 'standing',
   pendlay: 'pendlay',
   tbar: 'tbar',
   't bar': 'tbar',
@@ -1071,8 +1071,9 @@ const handler = async (req: Request): Promise<Response> => {
     }
 
     const completedAt = isValidNumber(body.completedAt) ? body.completedAt : Date.now();
-    const totalDuration = isValidNumber(body.totalDuration) ? body.totalDuration : 0;
-    completeSession(db, uid, body.sessionId, body.exercises, completedAt, totalDuration);
+    const totalDurationSec = isValidNumber(body.totalDuration) ? body.totalDuration : 0;
+    const totalDurationMin = Math.max(1, Math.round(totalDurationSec / 60));
+    completeSession(db, uid, body.sessionId, body.exercises, completedAt, totalDurationMin);
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 
