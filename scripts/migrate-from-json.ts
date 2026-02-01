@@ -88,9 +88,16 @@ const parseDateMs = (value: unknown): number | null => {
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
-  const maybe = value as { seconds?: number; nanoseconds?: number; toDate?: () => Date };
+  const maybe = value as {
+    seconds?: number;
+    nanoseconds?: number;
+    _seconds?: number;
+    _nanoseconds?: number;
+    toDate?: () => Date;
+  };
   if (typeof maybe.toDate === 'function') return maybe.toDate().getTime();
   if (typeof maybe.seconds === 'number') return maybe.seconds * 1000;
+  if (typeof maybe._seconds === 'number') return maybe._seconds * 1000;
   return null;
 };
 

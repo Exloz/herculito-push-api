@@ -8,7 +8,8 @@
     "start": "bun src/index.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "migrate:json": "bun scripts/migrate-from-json.ts",
-    "export:firestore": "bun scripts/export-firestore.ts"
+    "export:firestore": "bun scripts/export-firestore.ts",
+    "cleanup:system": "bun scripts/cleanup-system-data.ts"
   },
   "dependencies": {
     "jose": "^5.9.6",
