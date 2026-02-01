@@ -52,6 +52,7 @@ services:
 
 volumes:
   herculito_push_data:
+    external: true
 
 networks:
   proxy:
