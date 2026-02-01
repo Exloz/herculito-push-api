@@ -34,7 +34,7 @@ const junkPublicRoutinesToDelete = execScalar(
     FROM routines
     WHERE is_public = 1
       AND created_by_name IS NOT NULL
-      AND TRIM(created_by_name) IN ('Sistema','Usuario')
+      AND LOWER(TRIM(REPLACE(created_by_name, CHAR(160), ' '))) IN ('sistema','usuario')
   `
 );
 
@@ -58,14 +58,14 @@ try {
       SELECT id FROM routines
       WHERE is_public = 1
         AND created_by_name IS NOT NULL
-        AND TRIM(created_by_name) IN ('Sistema','Usuario')
+        AND LOWER(TRIM(REPLACE(created_by_name, CHAR(160), ' '))) IN ('sistema','usuario')
     )
   `).run();
   db.query(`
     DELETE FROM routines
     WHERE is_public = 1
       AND created_by_name IS NOT NULL
-      AND TRIM(created_by_name) IN ('Sistema','Usuario')
+      AND LOWER(TRIM(REPLACE(created_by_name, CHAR(160), ' '))) IN ('sistema','usuario')
   `).run();
 
   // Exercises

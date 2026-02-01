@@ -9,7 +9,8 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "migrate:json": "bun scripts/migrate-from-json.ts",
     "export:firestore": "bun scripts/export-firestore.ts",
-    "cleanup:system": "bun scripts/cleanup-system-data.ts"
+    "cleanup:system": "bun scripts/cleanup-system-data.ts",
+    "backfill:sessions": "bun scripts/backfill-sessions.ts"
   },
   "dependencies": {
     "jose": "^5.9.6",

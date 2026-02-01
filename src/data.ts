@@ -470,7 +470,7 @@ export const listRoutines = (db: Database, uid: string): RoutineOutput[] => {
         AND owner_uid <> 'system'
         AND (
           created_by_name IS NULL
-          OR TRIM(created_by_name) NOT IN ('Sistema', 'Usuario')
+          OR LOWER(TRIM(REPLACE(created_by_name, CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
         )
       )
     ORDER BY created_at_ms DESC

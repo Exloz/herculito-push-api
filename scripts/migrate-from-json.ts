@@ -73,11 +73,51 @@ type ExerciseLogDoc = {
   sets: Array<{ setNumber: number; weight: number; completed: boolean; completedAt?: unknown }>;
 };
 
+type ExerciseHistoryDoc = {
+  exerciseId: string;
+  exerciseName: string;
+  userId: string;
+  lastWeight: number[];
+  lastDate: string;
+  personalRecord?: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
+type UserRoutineDoc = {
+  id: string;
+  userId: string;
+  routineId: string;
+  addedAt?: unknown;
+  customName?: string;
+  isFavorite?: boolean;
+};
+
+type WorkoutDoc = {
+  id: string;
+  createdBy: string;
+  day: string;
+  name: string;
+  exercises: Array<{
+    id: string;
+    name: string;
+    sets: number;
+    reps: number;
+    restTime?: number;
+    video?: ExerciseVideo;
+  }>;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
 type ExportData = {
   exerciseTemplates?: ExerciseTemplateDoc[];
   routines?: RoutineDoc[];
   workoutSessions?: WorkoutSessionDoc[];
   exerciseLogs?: ExerciseLogDoc[];
+  exerciseHistory?: ExerciseHistoryDoc[];
+  userRoutines?: UserRoutineDoc[];
+  workouts?: WorkoutDoc[];
 };
 
 const parseDateMs = (value: unknown): number | null => {
@@ -388,9 +428,197 @@ for (const log of logs) {
   );
 }
 
+// Import exerciseHistory as synthetic exercise_logs for last-weight tracking
+const history = exportData.exerciseHistory ?? [];
+for (const hist of history) {
+  if (!hist?.exerciseId || !hist.userId || !hist.lastDate) continue;
+
+  const mappedId = templateIdMap.get(hist.exerciseId)
+    ?? templateIdMap.get(normalizeIdPrefix(hist.exerciseId))
+    ?? (() => {
+      // Create exercise if it doesn't exist
+      const ex = createExercise(db, hist.userId, {
+        name: hist.exerciseName || 'Ejercicio histórico',
+        category: 'Personalizado',
+        sets: 3,
+        reps: 10,
+        restTime: 90,
+        isPublic: false
+      });
+      templateIdMap.set(hist.exerciseId, ex.id);
+      insertAlias(ex.id, 'firestore_history', hist.exerciseId, hist.exerciseName || 'Ejercicio histórico', hist.userId, 0.6);
+      return ex.id;
+    })();
+
+  // Convert lastWeight array into sets
+  const sets = (hist.lastWeight || []).map((weight, idx) => ({
+    setNumber: idx + 1,
+    weight,
+    completed: true
+  }));
+
+  const payload = {
+    exerciseId: mappedId,
+    userId: hist.userId,
+    date: hist.lastDate,
+    sets
+  };
+
+  db.query(`
+    INSERT INTO exercise_logs (
+      id,
+      uid,
+      exercise_id,
+      date,
+      payload_json,
+      created_at_ms,
+      updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at_ms = excluded.updated_at_ms
+  `).run(
+    `${payload.exerciseId}_${payload.userId}_${payload.date}`,
+    payload.userId,
+    payload.exerciseId,
+    payload.date,
+    JSON.stringify(payload),
+    parseDateMs(hist.createdAt) ?? Date.now(),
+    parseDateMs(hist.updatedAt) ?? Date.now()
+  );
+}
+
+// Import userRoutines (saved/adopted routines) as routine clones owned by the user
+const userRoutines = exportData.userRoutines ?? [];
+for (const userRoutine of userRoutines) {
+  if (!userRoutine?.id || !userRoutine.userId || !userRoutine.routineId) continue;
+
+  // Find the original routine
+  const originalRoutine = db.query<{
+    id: string;
+    owner_uid: string;
+    name: string;
+    description: string | null;
+    is_public: number;
+    primary_muscle_group: string | null;
+    created_by_name: string | null;
+  }, [string]>(`
+    SELECT id, owner_uid, name, description, is_public, primary_muscle_group, created_by_name
+    FROM routines WHERE id = ? LIMIT 1
+  `).get(userRoutine.routineId);
+
+  if (!originalRoutine) {
+    // Original routine not found, skip
+    continue;
+  }
+
+  // Create a clone owned by the user
+  const now = Date.now();
+  const newRoutineId = `${originalRoutine.id}_clone_${userRoutine.userId}`;
+
+  db.query(`
+    INSERT INTO routines (
+      id, owner_uid, name, description, is_public, primary_muscle_group,
+      times_used, created_by_name, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      updated_at_ms = excluded.updated_at_ms
+  `).run(
+    newRoutineId,
+    userRoutine.userId,
+    userRoutine.customName || originalRoutine.name,
+    originalRoutine.description,
+    0, // Private by default
+    originalRoutine.primary_muscle_group,
+    originalRoutine.created_by_name,
+    parseDateMs(userRoutine.addedAt) ?? now,
+    now
+  );
+
+  // Copy routine exercises
+  const originalExercises = db.query<{
+    exercise_id: string;
+    display_name: string | null;
+    sets: number;
+    reps: number;
+    rest_time_s: number | null;
+  }, [string]>(`
+    SELECT exercise_id, display_name, sets, reps, rest_time_s
+    FROM routine_exercises WHERE routine_id = ? ORDER BY position ASC
+  `).all(originalRoutine.id);
+
+  const insertExercise = db.query(`
+    INSERT INTO routine_exercises (
+      id, routine_id, exercise_id, position, display_name, sets, reps, rest_time_s,
+      created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  originalExercises.forEach((ex, index) => {
+    const routineExerciseId = `${newRoutineId}_${index}_${Date.now()}`;
+    insertExercise.run(
+      routineExerciseId,
+      newRoutineId,
+      ex.exercise_id,
+      index,
+      ex.display_name,
+      ex.sets,
+      ex.reps,
+      ex.rest_time_s,
+      now,
+      now
+    );
+  });
+}
+
+// Import workouts (legacy weekly plans) per-user
+const workouts = exportData.workouts ?? [];
+for (const workout of workouts) {
+  if (!workout?.id || !workout.createdBy) continue;
+
+  // Map exercise IDs
+  const mappedExercises = (workout.exercises || []).map((ex) => {
+    const mappedId = templateIdMap.get(ex.id)
+      ?? templateIdMap.get(normalizeIdPrefix(ex.id))
+      ?? ex.id;
+    return {
+      id: mappedId,
+      name: ex.name,
+      sets: ex.sets,
+      reps: ex.reps,
+      restTime: ex.restTime,
+      video: ex.video
+    };
+  });
+
+  const now = Date.now();
+
+  db.query(`
+    INSERT INTO workouts (uid, id, payload_json, created_at_ms, updated_at_ms)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(uid, id) DO UPDATE SET
+      payload_json = excluded.payload_json,
+      updated_at_ms = excluded.updated_at_ms
+  `).run(
+    workout.createdBy,
+    workout.id,
+    JSON.stringify({
+      id: workout.id,
+      day: workout.day,
+      name: workout.name,
+      exercises: mappedExercises
+    }),
+    parseDateMs(workout.createdAt) ?? now,
+    parseDateMs(workout.updatedAt) ?? now
+  );
+}
+
 console.log('Migration completed:', {
   templates: templates.length,
   routines: routines.length,
   sessions: sessions.length,
-  logs: logs.length
+  logs: logs.length,
+  history: history.length,
+  userRoutines: userRoutines.length,
+  workouts: workouts.length
 });
