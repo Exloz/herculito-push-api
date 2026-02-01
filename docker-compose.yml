@@ -15,7 +15,7 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
     volumes:
-      - herculito_push_data:/data
+      - /var/lib/herculito/data:/data
     expose:
       - "3000"
     healthcheck:
@@ -49,10 +49,6 @@ services:
       - traefik.http.services.herculito-push-api.loadbalancer.server.port=3000
 
       - traefik.docker.network=proxy
-
-volumes:
-  herculito_push_data:
-    external: true
 
 networks:
   proxy:
