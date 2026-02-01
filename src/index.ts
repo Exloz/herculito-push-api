@@ -521,14 +521,9 @@ const MUSCLEWIKI_TOKEN_MAP: Record<string, string> = {
   simultáneo: 'simultaneous',
   unilateral: 'unilateral',
   bilateral: 'bilateral',
-  maquina: 'machine',
-  máquina: 'machine',
   smith: 'smith',
   multipower: 'smith',
   landmine: 'landmine',
-  polea: 'cable',
-  poleas: 'cable',
-  triceps: 'triceps',
   trasnuca: 'behind',
   nuca: 'neck'
 };
