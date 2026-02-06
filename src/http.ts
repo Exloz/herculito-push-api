@@ -4,10 +4,20 @@ export const json = (data: unknown, init?: ResponseInit): Response => {
   return new Response(JSON.stringify(data), { ...init, headers });
 };
 
-export const getJsonBody = async <T>(req: Request): Promise<T> => {
+const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+
+export const getJsonBody = async <T>(req: Request, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<T> => {
   const contentType = req.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
     throw json({ error: 'invalid_content_type' }, { status: 415 });
+  }
+
+  const lengthHeader = req.headers.get('content-length');
+  if (lengthHeader) {
+    const length = Number(lengthHeader);
+    if (Number.isFinite(length) && length > maxBytes) {
+      throw json({ error: 'payload_too_large' }, { status: 413 });
+    }
   }
 
   try {
