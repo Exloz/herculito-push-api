@@ -238,6 +238,7 @@ type MusclewikiVideoCacheEntry = {
 let musclewikiSlugCache: MusclewikiCache | null = null;
 let musclewikiSlugPromise: Promise<string[]> | null = null;
 const musclewikiVideoCache = new Map<string, MusclewikiVideoCacheEntry>();
+const musclewikiSlugTokensCache = new Map<string, string[]>();
 
 const MUSCLEWIKI_STOPWORDS = new Set([
   'de',
@@ -623,6 +624,10 @@ const getMusclewikiSlugs = async (): Promise<string[]> => {
   musclewikiSlugPromise = (async () => {
     const slugs = await fetchMusclewikiSlugs();
     musclewikiSlugCache = { slugs, fetchedAtMs: Date.now() };
+    musclewikiSlugTokensCache.clear();
+    slugs.forEach((slug) => {
+      musclewikiSlugTokensCache.set(slug, tokenizeSlug(slug));
+    });
     return slugs;
   })();
   try {
@@ -638,7 +643,10 @@ const suggestMusclewiki = async (query: string, limit: number): Promise<Array<{ 
   if (tokens.length === 0) return [];
   const scored = slugs
     .map((slug) => {
-      const slugTokens = tokenizeSlug(slug);
+      const slugTokens = musclewikiSlugTokensCache.get(slug) ?? tokenizeSlug(slug);
+      if (!musclewikiSlugTokensCache.has(slug)) {
+        musclewikiSlugTokensCache.set(slug, slugTokens);
+      }
       return {
         slug,
         displayName: toDisplayName(slug),
@@ -732,6 +740,7 @@ type RequestLogMeta = {
   method: string;
   path: string;
   startedAtMs: number;
+  uid?: string;
 };
 
 const logInfo = (payload: Record<string, unknown>): void => {
@@ -750,7 +759,8 @@ const logRequestIn = (meta: RequestLogMeta): void => {
     event: 'api_in',
     requestId: meta.requestId,
     method: meta.method,
-    path: meta.path
+    path: meta.path,
+    uid: meta.uid
   });
 };
 
@@ -760,55 +770,110 @@ const logRequestOut = (meta: RequestLogMeta, status: number): void => {
     requestId: meta.requestId,
     method: meta.method,
     path: meta.path,
+    uid: meta.uid,
     status,
     durationMs: Date.now() - meta.startedAtMs
   });
 };
 
+const requireAuth = async (req: Request, meta?: RequestLogMeta) => {
+  const auth = await requireFirebaseAuth(req, env.firebaseProjectId);
+  if (meta) {
+    meta.uid = auth.uid;
+  }
+  return auth;
+};
+
+const isValidLimitParam = (value: string | null, max: number): number | undefined => {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > max) return undefined;
+  return Math.floor(parsed);
+};
+
+const isValidExerciseEntry = (
+  value: unknown
+): value is {
+  id: string;
+  name: string;
+  sets: number;
+  reps: number;
+  restTime?: number;
+} => {
+  if (!value || typeof value !== 'object') return false;
+  const entry = value as Record<string, unknown>;
+  if (!isNonEmptyString(entry.id) || !isNonEmptyString(entry.name)) return false;
+  if (!isValidNumber(entry.sets) || !isValidNumber(entry.reps)) return false;
+  if (entry.restTime !== undefined && !isValidNumber(entry.restTime)) return false;
+  return true;
+};
+
+const isValidExerciseList = (value: unknown): value is Array<{
+  id: string;
+  name: string;
+  sets: number;
+  reps: number;
+  restTime?: number;
+}> => Array.isArray(value) && value.every((entry) => isValidExerciseEntry(entry));
+
+const SCHEDULER_BATCH_SIZE = 50;
+const SCHEDULER_MAX_JOBS_PER_TICK = 200;
+const getRetryDelayMs = (attempts: number): number => {
+  const base = 5_000;
+  const delay = base * Math.pow(2, Math.max(0, attempts - 1));
+  return Math.min(delay, 60_000);
+};
+
 const schedulerTick = async (): Promise<void> => {
   const now = Date.now();
-  const due = getDueJobs(db, now, 20);
-  if (due.length === 0) return;
+  let processed = 0;
+  while (processed < SCHEDULER_MAX_JOBS_PER_TICK) {
+    const due = getDueJobs(db, now, SCHEDULER_BATCH_SIZE);
+    if (due.length === 0) return;
 
-  for (const job of due) {
-    if (!tryClaimJob(db, job.id)) continue;
+    for (const job of due) {
+      if (!tryClaimJob(db, job.id)) continue;
+      processed += 1;
 
-    try {
-      const subscriptionRow = getSubscription(db, job.uid, job.deviceId);
-      if (!subscriptionRow || subscriptionRow.isActive !== 1) {
-        markJobCanceled(db, job.id);
-        continue;
-      }
-
-      const subscription: PushSubscriptionLike = {
-        endpoint: subscriptionRow.endpoint,
-        keys: {
-          p256dh: subscriptionRow.p256dh,
-          auth: subscriptionRow.auth
+      try {
+        const subscriptionRow = getSubscription(db, job.uid, job.deviceId);
+        if (!subscriptionRow || subscriptionRow.isActive !== 1) {
+          markJobCanceled(db, job.id);
+          continue;
         }
-      };
 
-      const payload = JSON.parse(job.payloadJson) as PushPayload;
-      await sendPush(subscription, payload);
-      markJobSent(db, job.id);
-    } catch (error) {
-      const err = error as unknown as { statusCode?: number };
-      const statusCode = typeof err?.statusCode === 'number' ? err.statusCode : undefined;
+        const subscription: PushSubscriptionLike = {
+          endpoint: subscriptionRow.endpoint,
+          keys: {
+            p256dh: subscriptionRow.p256dh,
+            auth: subscriptionRow.auth
+          }
+        };
 
-      if (statusCode === 404 || statusCode === 410) {
-        deactivateSubscription(db, job.uid, job.deviceId);
-        markJobCanceled(db, job.id);
-        continue;
+        const payload = JSON.parse(job.payloadJson) as PushPayload;
+        await sendPush(subscription, payload);
+        markJobSent(db, job.id);
+      } catch (error) {
+        const err = error as unknown as { statusCode?: number };
+        const statusCode = typeof err?.statusCode === 'number' ? err.statusCode : undefined;
+
+        if (statusCode === 404 || statusCode === 410) {
+          deactivateSubscription(db, job.uid, job.deviceId);
+          markJobCanceled(db, job.id);
+          continue;
+        }
+
+        const nextAttempts = job.attempts + 1;
+        if (nextAttempts <= 3) {
+          rescheduleJob(db, job.id, Date.now() + getRetryDelayMs(nextAttempts), nextAttempts);
+        } else {
+          markJobFailed(db, job.id);
+        }
       }
 
-      const nextAttempts = job.attempts + 1;
-      if (nextAttempts <= 3) {
-        rescheduleJob(db, job.id, Date.now() + 5_000, nextAttempts);
-      } else {
-        markJobFailed(db, job.id);
+      if (processed >= SCHEDULER_MAX_JOBS_PER_TICK) {
+        return;
       }
-
-
     }
   }
 };
@@ -817,7 +882,7 @@ setInterval(() => {
   void schedulerTick();
 }, 750);
 
-const handler = async (req: Request): Promise<Response> => {
+const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> => {
   if (req.method === 'OPTIONS') {
     return corsPreflight(req, env.allowedOrigins);
   }
@@ -833,7 +898,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/push/subscribe') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<SubscribeBody>(req);
 
     if (!isNonEmptyString(body.deviceId)) {
@@ -861,7 +926,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/rest/schedule') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<ScheduleBody>(req);
 
     if (!isNonEmptyString(body.deviceId)) {
@@ -899,7 +964,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/rest/cancel') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<CancelBody>(req);
 
     if (!isNonEmptyString(body.deviceId)) {
@@ -911,13 +976,14 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/data/exercises') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
-    const exercises = listExercises(db, uid);
+    const { uid } = await requireAuth(req, meta);
+    const limit = isValidLimitParam(url.searchParams.get('limit'), 500);
+    const exercises = listExercises(db, uid, limit);
     return withCors(req, json({ exercises }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/exercises') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseCreateBody>(req);
 
     if (!isNonEmptyString(body.name) || !isNonEmptyString(body.category)) {
@@ -945,7 +1011,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/exercises/update') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseUpdateBody>(req);
 
     if (!isNonEmptyString(body.id)) {
@@ -957,7 +1023,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/exercises/use') {
-    await requireFirebaseAuth(req, env.firebaseProjectId);
+    await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseUsageBody>(req);
 
     if (!isNonEmptyString(body.id)) {
@@ -969,16 +1035,17 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/data/routines') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
-    const routines = listRoutines(db, uid);
+    const { uid } = await requireAuth(req, meta);
+    const limit = isValidLimitParam(url.searchParams.get('limit'), 200);
+    const routines = listRoutines(db, uid, limit);
     return withCors(req, json({ routines }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/routines') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<RoutineCreateBody>(req);
 
-    if (!isNonEmptyString(body.name) || !Array.isArray(body.exercises)) {
+    if (!isNonEmptyString(body.name) || !isValidExerciseList(body.exercises)) {
       return withCors(req, json({ error: 'invalid_routine' }, { status: 400 }), env.allowedOrigins);
     }
 
@@ -987,11 +1054,15 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/routines/update') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<RoutineUpdateBody>(req);
 
     if (!isNonEmptyString(body.id)) {
       return withCors(req, json({ error: 'invalid_routine_id' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    if (body.updates?.exercises && !isValidExerciseList(body.updates.exercises)) {
+      return withCors(req, json({ error: 'invalid_routine_exercises' }, { status: 400 }), env.allowedOrigins);
     }
 
     updateRoutine(db, uid, body.id, body.updates ?? {});
@@ -999,7 +1070,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/routines/delete') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<RoutineDeleteBody>(req);
 
     if (!isNonEmptyString(body.id)) {
@@ -1011,7 +1082,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/routines/use') {
-    await requireFirebaseAuth(req, env.firebaseProjectId);
+    await requireAuth(req, meta);
     const body = await getJsonBody<RoutineUsageBody>(req);
 
     if (!isNonEmptyString(body.id)) {
@@ -1023,13 +1094,14 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/data/sessions') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
-    const sessions = listSessions(db, uid);
+    const { uid } = await requireAuth(req, meta);
+    const limit = isValidLimitParam(url.searchParams.get('limit'), 500) ?? 500;
+    const sessions = listSessions(db, uid, limit);
     return withCors(req, json({ sessions }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/sessions/start') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<SessionStartBody>(req);
 
     if (!isNonEmptyString(body.routineName)) {
@@ -1051,7 +1123,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/sessions/progress') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<SessionProgressBody>(req);
 
     if (!isNonEmptyString(body.sessionId) || !Array.isArray(body.exercises)) {
@@ -1063,7 +1135,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/sessions/complete') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<SessionCompleteBody>(req);
 
     if (!isNonEmptyString(body.sessionId) || !Array.isArray(body.exercises)) {
@@ -1078,7 +1150,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/exercise-logs') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseLogBody>(req);
 
     if (!isNonEmptyString(body.exerciseId) || !isValidDateKey(body.date) || !Array.isArray(body.sets)) {
@@ -1098,7 +1170,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/data/exercise-logs') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const date = url.searchParams.get('date') ?? '';
     if (!isValidDateKey(date)) {
       return withCors(req, json({ error: 'missing_date' }, { status: 400 }), env.allowedOrigins);
@@ -1108,17 +1180,22 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/data/workouts') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
-    const workouts = listWorkouts(db, uid);
+    const { uid } = await requireAuth(req, meta);
+    const limit = isValidLimitParam(url.searchParams.get('limit'), 200);
+    const workouts = listWorkouts(db, uid, limit);
     return withCors(req, json({ workouts }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/workouts') {
-    const { uid } = await requireFirebaseAuth(req, env.firebaseProjectId);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<WorkoutUpsertBody>(req);
 
-    if (!body.workout || !isNonEmptyString(body.workout.id)) {
+    if (!body.workout || !isNonEmptyString(body.workout.id) || !isNonEmptyString(body.workout.day) || !isNonEmptyString(body.workout.name)) {
       return withCors(req, json({ error: 'invalid_workout' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    if (!isValidExerciseList(body.workout.exercises)) {
+      return withCors(req, json({ error: 'invalid_workout_exercises' }, { status: 400 }), env.allowedOrigins);
     }
 
     upsertWorkout(db, uid, body.workout);
@@ -1126,7 +1203,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/musclewiki/suggest') {
-    await requireFirebaseAuth(req, env.firebaseProjectId);
+    await requireAuth(req, meta);
     const body = await getJsonBody<MusclewikiSuggestBody>(req);
 
     if (!isNonEmptyString(body.query)) {
@@ -1139,7 +1216,7 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/musclewiki/videos') {
-    await requireFirebaseAuth(req, env.firebaseProjectId);
+    await requireAuth(req, meta);
     const body = await getJsonBody<MusclewikiVideoBody>(req);
 
     if (!isValidSlug(body.slug)) {
@@ -1190,7 +1267,7 @@ Bun.serve({
     logRequestIn(meta);
 
     try {
-      const res = await handler(req);
+      const res = await handler(req, meta);
       logRequestOut(meta, res.status);
       return res;
     } catch (error) {
