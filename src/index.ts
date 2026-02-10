@@ -21,10 +21,11 @@ import {
   listExerciseLogsForDate
 } from './data';
 import {
-  cancelJobsForDevice,
+  cancelRestJob,
   createDb,
   deactivateSubscription,
   getDueJobs,
+  isJobClaimCurrent,
   getSubscription,
   markJobCanceled,
   markJobFailed,
@@ -59,6 +60,7 @@ type SubscribeBody = {
 type ScheduleBody = {
   deviceId: string;
   seconds: number;
+  commandAtMs?: number;
   title?: string;
   body?: string;
   url?: string;
@@ -66,6 +68,7 @@ type ScheduleBody = {
 
 type CancelBody = {
   deviceId: string;
+  commandAtMs?: number;
 };
 
 type MusclewikiSuggestBody = {
@@ -206,6 +209,10 @@ const isValidSlug = (value: unknown): value is string => {
 
 const isValidNumber = (value: unknown): value is number => {
   return typeof value === 'number' && Number.isFinite(value);
+};
+
+const isValidCommandAtMs = (value: unknown): value is number => {
+  return isValidNumber(value) && value > 0;
 };
 
 const isValidOptionalNumber = (value: unknown): value is number | undefined => {
@@ -832,13 +839,17 @@ const schedulerTick = async (): Promise<void> => {
     if (due.length === 0) return;
 
     for (const job of due) {
-      if (!tryClaimJob(db, job.id)) continue;
+      if (!tryClaimJob(db, job.id, job.requestedAtMs, job.executeAtMs, now)) continue;
       processed += 1;
 
       try {
+        if (!isJobClaimCurrent(db, job.id, job.requestedAtMs)) {
+          continue;
+        }
+
         const subscriptionRow = getSubscription(db, job.uid, job.deviceId);
         if (!subscriptionRow || subscriptionRow.isActive !== 1) {
-          markJobCanceled(db, job.id);
+          markJobCanceled(db, job.id, job.requestedAtMs);
           continue;
         }
 
@@ -851,23 +862,28 @@ const schedulerTick = async (): Promise<void> => {
         };
 
         const payload = JSON.parse(job.payloadJson) as PushPayload;
+
+        if (!isJobClaimCurrent(db, job.id, job.requestedAtMs)) {
+          continue;
+        }
+
         await sendPush(subscription, payload);
-        markJobSent(db, job.id);
+        markJobSent(db, job.id, job.requestedAtMs);
       } catch (error) {
         const err = error as unknown as { statusCode?: number };
         const statusCode = typeof err?.statusCode === 'number' ? err.statusCode : undefined;
 
         if (statusCode === 404 || statusCode === 410) {
           deactivateSubscription(db, job.uid, job.deviceId);
-          markJobCanceled(db, job.id);
+          markJobCanceled(db, job.id, job.requestedAtMs);
           continue;
         }
 
         const nextAttempts = job.attempts + 1;
         if (nextAttempts <= 3) {
-          rescheduleJob(db, job.id, Date.now() + getRetryDelayMs(nextAttempts), nextAttempts);
+          rescheduleJob(db, job.id, job.requestedAtMs, Date.now() + getRetryDelayMs(nextAttempts), nextAttempts);
         } else {
-          markJobFailed(db, job.id);
+          markJobFailed(db, job.id, job.requestedAtMs);
         }
       }
 
@@ -951,16 +967,18 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
 
     const jobId = makeRestJobId(uid, body.deviceId);
     const executeAtMs = Date.now() + Math.round(body.seconds * 1000);
+    const requestedAtMs = isValidCommandAtMs(body.commandAtMs) ? body.commandAtMs : Date.now();
 
     upsertJob(db, {
       id: jobId,
       uid,
       deviceId: body.deviceId,
       executeAtMs,
-      payloadJson: JSON.stringify(payload)
+      payloadJson: JSON.stringify(payload),
+      requestedAtMs
     });
 
-    return withCors(req, json({ ok: true, jobId, executeAtMs }), env.allowedOrigins);
+    return withCors(req, json({ ok: true, jobId, executeAtMs, requestedAtMs }), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/rest/cancel') {
@@ -971,8 +989,15 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_device_id' }, { status: 400 }), env.allowedOrigins);
     }
 
-    const canceled = cancelJobsForDevice(db, uid, body.deviceId);
-    return withCors(req, json({ ok: true, canceled }), env.allowedOrigins);
+    const requestedAtMs = isValidCommandAtMs(body.commandAtMs) ? body.commandAtMs : Date.now();
+    const jobId = makeRestJobId(uid, body.deviceId);
+    const canceled = cancelRestJob(db, {
+      id: jobId,
+      uid,
+      deviceId: body.deviceId,
+      requestedAtMs
+    });
+    return withCors(req, json({ ok: true, canceled, jobId, requestedAtMs }), env.allowedOrigins);
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/data/exercises') {

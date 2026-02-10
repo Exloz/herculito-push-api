@@ -15,6 +15,7 @@ export interface JobRow {
   deviceId: string;
   executeAtMs: number;
   payloadJson: string;
+  requestedAtMs: number;
   status: 'pending' | 'sending' | 'sent' | 'canceled' | 'failed';
   attempts: number;
 }
@@ -44,6 +45,7 @@ export const createDb = (databasePath: string): Database => {
       device_id TEXT NOT NULL,
       execute_at_ms INTEGER NOT NULL,
       payload_json TEXT NOT NULL,
+      requested_at_ms INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
       created_at_ms INTEGER NOT NULL,
@@ -207,6 +209,18 @@ export const createDb = (databasePath: string): Database => {
     // ignore migration failures (schema will still be created on fresh DBs)
   }
 
+  // Best-effort migration: ensure jobs has requested_at_ms for command ordering.
+  try {
+    const columns = db.query<{ name: string }, []>(`PRAGMA table_info(jobs)`).all();
+    const hasRequestedAt = columns.some((col) => col.name === 'requested_at_ms');
+    if (!hasRequestedAt) {
+      db.exec(`ALTER TABLE jobs ADD COLUMN requested_at_ms INTEGER NOT NULL DEFAULT 0;`);
+      db.exec(`UPDATE jobs SET requested_at_ms = COALESCE(updated_at_ms, created_at_ms, 0) WHERE requested_at_ms = 0;`);
+    }
+  } catch {
+    // ignore migration failures
+  }
+
   return db;
 };
 
@@ -256,29 +270,48 @@ export const upsertJob = (db: Database, args: {
   deviceId: string;
   executeAtMs: number;
   payloadJson: string;
+  requestedAtMs: number;
 }): void => {
   const now = Date.now();
   db.query(`
-    INSERT INTO jobs (id, uid, device_id, execute_at_ms, payload_json, status, attempts, created_at_ms, updated_at_ms)
-    VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+    INSERT INTO jobs (id, uid, device_id, execute_at_ms, payload_json, requested_at_ms, status, attempts, created_at_ms, updated_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
+      uid = excluded.uid,
+      device_id = excluded.device_id,
       execute_at_ms = excluded.execute_at_ms,
       payload_json = excluded.payload_json,
+      requested_at_ms = excluded.requested_at_ms,
       status = 'pending',
       attempts = 0,
       updated_at_ms = excluded.updated_at_ms
-  `).run(args.id, args.uid, args.deviceId, args.executeAtMs, args.payloadJson, now, now);
+    WHERE excluded.requested_at_ms >= jobs.requested_at_ms
+  `).run(args.id, args.uid, args.deviceId, args.executeAtMs, args.payloadJson, args.requestedAtMs, now, now);
 };
 
-export const cancelJobsForDevice = (db: Database, uid: string, deviceId: string): number => {
+export const cancelRestJob = (db: Database, args: {
+  id: string;
+  uid: string;
+  deviceId: string;
+  requestedAtMs: number;
+}): boolean => {
   const now = Date.now();
   const result = db.query(`
-    UPDATE jobs
-    SET status = 'canceled', updated_at_ms = ?
-    WHERE uid = ? AND device_id = ? AND status IN ('pending', 'sending')
-  `).run(now, uid, deviceId);
+    INSERT INTO jobs (id, uid, device_id, execute_at_ms, payload_json, requested_at_ms, status, attempts, created_at_ms, updated_at_ms)
+    VALUES (?, ?, ?, 0, '{}', ?, 'canceled', 0, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      uid = excluded.uid,
+      device_id = excluded.device_id,
+      execute_at_ms = 0,
+      payload_json = '{}',
+      requested_at_ms = excluded.requested_at_ms,
+      status = 'canceled',
+      attempts = 0,
+      updated_at_ms = excluded.updated_at_ms
+    WHERE excluded.requested_at_ms >= jobs.requested_at_ms
+  `).run(args.id, args.uid, args.deviceId, args.requestedAtMs, now, now);
 
-  return Number(result.changes ?? 0);
+  return Number(result.changes ?? 0) > 0;
 };
 
 export const getDueJobs = (db: Database, nowMs: number, limit: number): JobRow[] => {
@@ -289,6 +322,7 @@ export const getDueJobs = (db: Database, nowMs: number, limit: number): JobRow[]
       device_id as deviceId,
       execute_at_ms as executeAtMs,
       payload_json as payloadJson,
+      requested_at_ms as requestedAtMs,
       status,
       attempts
     FROM jobs
@@ -298,49 +332,62 @@ export const getDueJobs = (db: Database, nowMs: number, limit: number): JobRow[]
   `).all(nowMs, limit);
 };
 
-export const tryClaimJob = (db: Database, jobId: string): boolean => {
+export const tryClaimJob = (
+  db: Database,
+  jobId: string,
+  requestedAtMs: number,
+  executeAtMs: number,
+  nowMs: number
+): boolean => {
   const now = Date.now();
   const result = db.query(`
     UPDATE jobs
     SET status = 'sending', updated_at_ms = ?
-    WHERE id = ? AND status = 'pending'
-  `).run(now, jobId);
+    WHERE id = ? AND status = 'pending' AND requested_at_ms = ? AND execute_at_ms = ? AND execute_at_ms <= ?
+  `).run(now, jobId, requestedAtMs, executeAtMs, nowMs);
 
   return Number(result.changes ?? 0) === 1;
 };
 
-export const markJobSent = (db: Database, jobId: string): void => {
+export const isJobClaimCurrent = (db: Database, jobId: string, requestedAtMs: number): boolean => {
+  const row = db.query<{ status: string; requested_at_ms: number }, [string]>(`
+    SELECT status, requested_at_ms FROM jobs WHERE id = ? LIMIT 1
+  `).get(jobId);
+  return !!row && row.status === 'sending' && row.requested_at_ms === requestedAtMs;
+};
+
+export const markJobSent = (db: Database, jobId: string, requestedAtMs: number): void => {
   const now = Date.now();
   db.query(`
     UPDATE jobs
     SET status = 'sent', updated_at_ms = ?
-    WHERE id = ?
-  `).run(now, jobId);
+    WHERE id = ? AND status = 'sending' AND requested_at_ms = ?
+  `).run(now, jobId, requestedAtMs);
 };
 
-export const markJobCanceled = (db: Database, jobId: string): void => {
+export const markJobCanceled = (db: Database, jobId: string, requestedAtMs: number): void => {
   const now = Date.now();
   db.query(`
     UPDATE jobs
     SET status = 'canceled', updated_at_ms = ?
-    WHERE id = ?
-  `).run(now, jobId);
+    WHERE id = ? AND status = 'sending' AND requested_at_ms = ?
+  `).run(now, jobId, requestedAtMs);
 };
 
-export const rescheduleJob = (db: Database, jobId: string, nextExecuteAtMs: number, nextAttempts: number): void => {
+export const rescheduleJob = (db: Database, jobId: string, requestedAtMs: number, nextExecuteAtMs: number, nextAttempts: number): void => {
   const now = Date.now();
   db.query(`
     UPDATE jobs
     SET status = 'pending', execute_at_ms = ?, attempts = ?, updated_at_ms = ?
-    WHERE id = ?
-  `).run(nextExecuteAtMs, nextAttempts, now, jobId);
+    WHERE id = ? AND status = 'sending' AND requested_at_ms = ?
+  `).run(nextExecuteAtMs, nextAttempts, now, jobId, requestedAtMs);
 };
 
-export const markJobFailed = (db: Database, jobId: string): void => {
+export const markJobFailed = (db: Database, jobId: string, requestedAtMs: number): void => {
   const now = Date.now();
   db.query(`
     UPDATE jobs
     SET status = 'failed', updated_at_ms = ?
-    WHERE id = ?
-  `).run(now, jobId);
+    WHERE id = ? AND status = 'sending' AND requested_at_ms = ?
+  `).run(now, jobId, requestedAtMs);
 };
