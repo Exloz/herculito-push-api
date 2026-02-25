@@ -97,7 +97,7 @@ export type WorkoutSessionOutput = {
 export type LeaderboardEntryOutput = {
   userId: string;
   name?: string;
-  totalExercises: number;
+  totalWorkouts: number;
   position: number;
 };
 
@@ -192,20 +192,14 @@ const listLeaderboardByPeriod = (
 ): LeaderboardPeriodOutput => {
   const rows = db.query<{
     uid: string;
-    total_exercises: number;
+    total_workouts: number;
     position: number;
     display_name: string | null;
   }, [number]>(`
     WITH aggregated AS (
       SELECT
         ws.uid AS uid,
-        SUM(
-          CASE
-            WHEN ws.exercises_json IS NULL OR TRIM(ws.exercises_json) = '' THEN 1
-            WHEN json_valid(ws.exercises_json) = 1 THEN COALESCE(NULLIF(json_array_length(ws.exercises_json), 0), 1)
-            ELSE 1
-          END
-        ) AS total_exercises
+        COUNT(1) AS total_workouts
       FROM workout_sessions ws
       WHERE ws.completed_at_ms IS NOT NULL AND ws.completed_at_ms >= ?
       GROUP BY ws.uid
@@ -213,15 +207,15 @@ const listLeaderboardByPeriod = (
     ranked AS (
       SELECT
         aggregated.uid,
-        aggregated.total_exercises,
+        aggregated.total_workouts,
         ROW_NUMBER() OVER (
-          ORDER BY aggregated.total_exercises DESC, aggregated.uid ASC
+          ORDER BY aggregated.total_workouts DESC, aggregated.uid ASC
         ) AS position
       FROM aggregated
     )
     SELECT
       ranked.uid,
-      ranked.total_exercises,
+      ranked.total_workouts,
       ranked.position,
       (
         SELECT r.created_by_name
@@ -240,7 +234,7 @@ const listLeaderboardByPeriod = (
   const fullLeaderboard = rows.map((row) => ({
     userId: row.uid,
     name: row.display_name ?? undefined,
-    totalExercises: Number.isFinite(row.total_exercises) ? row.total_exercises : 0,
+    totalWorkouts: Number.isFinite(row.total_workouts) ? row.total_workouts : 0,
     position: row.position
   }));
 
