@@ -124,6 +124,16 @@ export const createDb = (databasePath: string): Database => {
     CREATE INDEX IF NOT EXISTS routines_owner_idx ON routines (owner_uid);
     CREATE INDEX IF NOT EXISTS routines_public_idx ON routines (is_public);
 
+    CREATE TABLE IF NOT EXISTS user_hidden_public_routines (
+      uid TEXT NOT NULL,
+      routine_id TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (uid, routine_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS user_hidden_public_routines_uid_idx ON user_hidden_public_routines (uid);
+
     CREATE TABLE IF NOT EXISTS routine_exercises (
       id TEXT PRIMARY KEY,
       routine_id TEXT NOT NULL,

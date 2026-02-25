@@ -8,7 +8,10 @@ import {
   deleteRoutine,
   incrementExerciseUsage,
   incrementRoutineUsage,
+  getCompetitiveLeaderboard,
+  listHiddenPublicRoutineIds,
   listExercises,
+  setRoutineVisibility,
   listRoutines,
   listSessions,
   listWorkouts,
@@ -144,6 +147,11 @@ type RoutineUsageBody = {
   id: string;
 };
 
+type RoutineVisibilityBody = {
+  routineId: string;
+  visible: boolean;
+};
+
 type SessionStartBody = {
   id?: string;
   routineId?: string;
@@ -209,6 +217,10 @@ const isValidSlug = (value: unknown): value is string => {
 
 const isValidNumber = (value: unknown): value is number => {
   return typeof value === 'number' && Number.isFinite(value);
+};
+
+const isBoolean = (value: unknown): value is boolean => {
+  return typeof value === 'boolean';
 };
 
 const isValidCommandAtMs = (value: unknown): value is number => {
@@ -1118,11 +1130,44 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 
+  if (req.method === 'GET' && url.pathname === '/v1/data/routines/visibility') {
+    const { uid } = await requireAuth(req, meta);
+    const hiddenRoutineIds = listHiddenPublicRoutineIds(db, uid);
+    return withCors(req, json({ hiddenRoutineIds }), env.allowedOrigins);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/data/routines/visibility') {
+    const { uid } = await requireAuth(req, meta);
+    const body = await getJsonBody<RoutineVisibilityBody>(req);
+
+    if (!isNonEmptyString(body.routineId) || !isBoolean(body.visible)) {
+      return withCors(req, json({ error: 'invalid_routine_visibility' }, { status: 400 }), env.allowedOrigins);
+    }
+
+    const updated = setRoutineVisibility(db, uid, {
+      routineId: body.routineId,
+      visible: body.visible
+    });
+
+    if (!updated) {
+      return withCors(req, json({ error: 'routine_not_visible_to_user' }, { status: 404 }), env.allowedOrigins);
+    }
+
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
   if (req.method === 'GET' && url.pathname === '/v1/data/sessions') {
     const { uid } = await requireAuth(req, meta);
     const limit = isValidLimitParam(url.searchParams.get('limit'), 500) ?? 500;
     const sessions = listSessions(db, uid, limit);
     return withCors(req, json({ sessions }), env.allowedOrigins);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/data/leaderboard') {
+    const { uid } = await requireAuth(req, meta);
+    const limit = isValidLimitParam(url.searchParams.get('limit'), 50) ?? 10;
+    const leaderboard = getCompetitiveLeaderboard(db, uid, limit);
+    return withCors(req, json(leaderboard), env.allowedOrigins);
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/sessions/start') {

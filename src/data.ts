@@ -94,6 +94,23 @@ export type WorkoutSessionOutput = {
   totalDuration?: number;
 };
 
+export type LeaderboardEntryOutput = {
+  userId: string;
+  name?: string;
+  totalExercises: number;
+  position: number;
+};
+
+export type LeaderboardPeriodOutput = {
+  top: LeaderboardEntryOutput[];
+  currentUser: LeaderboardEntryOutput | null;
+};
+
+export type CompetitiveLeaderboardOutput = {
+  week: LeaderboardPeriodOutput;
+  month: LeaderboardPeriodOutput;
+};
+
 export type ExerciseLogInput = {
   exerciseId: string;
   date: string;
@@ -112,6 +129,11 @@ export type WorkoutInput = {
     restTime?: number;
     video?: ExerciseVideo;
   }>;
+};
+
+export type RoutineVisibilityInput = {
+  routineId: string;
+  visible: boolean;
 };
 
 const normalizeName = (value: string): string => {
@@ -145,6 +167,87 @@ const toVideoJson = (video?: ExerciseVideo): string | null => {
 const makeCustomExerciseId = (): string => {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(16).slice(2)}`;
   return `custom:${id}`;
+};
+
+const getStartOfWeekMs = (referenceDate = new Date()): number => {
+  const startOfWeek = new Date(referenceDate);
+  const dayOfWeek = startOfWeek.getDay();
+  const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  startOfWeek.setDate(startOfWeek.getDate() - daysSinceMonday);
+  startOfWeek.setHours(0, 0, 0, 0);
+  return startOfWeek.getTime();
+};
+
+const getStartOfMonthMs = (referenceDate = new Date()): number => {
+  const startOfMonth = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1);
+  startOfMonth.setHours(0, 0, 0, 0);
+  return startOfMonth.getTime();
+};
+
+const listLeaderboardByPeriod = (
+  db: Database,
+  requesterUid: string,
+  periodStartMs: number,
+  limit: number
+): LeaderboardPeriodOutput => {
+  const rows = db.query<{
+    uid: string;
+    total_exercises: number;
+    position: number;
+    display_name: string | null;
+  }, [number]>(`
+    WITH aggregated AS (
+      SELECT
+        ws.uid AS uid,
+        SUM(
+          CASE
+            WHEN ws.exercises_json IS NULL OR TRIM(ws.exercises_json) = '' THEN 1
+            WHEN json_valid(ws.exercises_json) = 1 THEN COALESCE(NULLIF(json_array_length(ws.exercises_json), 0), 1)
+            ELSE 1
+          END
+        ) AS total_exercises
+      FROM workout_sessions ws
+      WHERE ws.completed_at_ms IS NOT NULL AND ws.completed_at_ms >= ?
+      GROUP BY ws.uid
+    ),
+    ranked AS (
+      SELECT
+        aggregated.uid,
+        aggregated.total_exercises,
+        ROW_NUMBER() OVER (
+          ORDER BY aggregated.total_exercises DESC, aggregated.uid ASC
+        ) AS position
+      FROM aggregated
+    )
+    SELECT
+      ranked.uid,
+      ranked.total_exercises,
+      ranked.position,
+      (
+        SELECT r.created_by_name
+        FROM routines r
+        WHERE
+          r.owner_uid = ranked.uid
+          AND r.created_by_name IS NOT NULL
+          AND LENGTH(TRIM(r.created_by_name)) > 0
+        ORDER BY r.updated_at_ms DESC
+        LIMIT 1
+      ) AS display_name
+    FROM ranked
+    ORDER BY ranked.position ASC
+  `).all(periodStartMs);
+
+  const fullLeaderboard = rows.map((row) => ({
+    userId: row.uid,
+    name: row.display_name ?? undefined,
+    totalExercises: Number.isFinite(row.total_exercises) ? row.total_exercises : 0,
+    position: row.position
+  }));
+
+  return {
+    top: fullLeaderboard.slice(0, limit),
+    currentUser: fullLeaderboard.find((entry) => entry.userId === requesterUid) ?? null
+  };
 };
 
 const resolveExerciseId = (input: ExerciseInput): string => {
@@ -776,6 +879,62 @@ export const incrementRoutineUsage = (db: Database, routineId: string): void => 
   db.query(`UPDATE routines SET times_used = times_used + 1 WHERE id = ?`).run(routineId);
 };
 
+export const listHiddenPublicRoutineIds = (db: Database, uid: string): string[] => {
+  const rows = db.query<{ routine_id: string }, [string, string]>(`
+    SELECT u.routine_id
+    FROM user_hidden_public_routines u
+    INNER JOIN routines r ON r.id = u.routine_id
+    WHERE
+      u.uid = ?
+      AND r.is_public = 1
+      AND r.owner_uid <> ?
+      AND r.owner_uid <> 'system'
+      AND (
+        r.created_by_name IS NULL
+        OR LOWER(TRIM(REPLACE(r.created_by_name, CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
+      )
+    ORDER BY u.updated_at_ms DESC
+  `).all(uid, uid);
+
+  return rows.map((row) => row.routine_id);
+};
+
+export const setRoutineVisibility = (db: Database, uid: string, input: RoutineVisibilityInput): boolean => {
+  if (input.visible) {
+    db.query(`DELETE FROM user_hidden_public_routines WHERE uid = ? AND routine_id = ?`).run(uid, input.routineId);
+    return true;
+  }
+
+  const routine = db.query<{ id: string }, [string, string]>(`
+    SELECT r.id
+    FROM routines r
+    WHERE
+      r.id = ?
+      AND r.is_public = 1
+      AND r.owner_uid <> ?
+      AND r.owner_uid <> 'system'
+      AND (
+        r.created_by_name IS NULL
+        OR LOWER(TRIM(REPLACE(r.created_by_name, CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
+      )
+    LIMIT 1
+  `).get(input.routineId, uid);
+
+  if (!routine) {
+    return false;
+  }
+
+  const now = Date.now();
+  db.query(`
+    INSERT INTO user_hidden_public_routines (uid, routine_id, created_at_ms, updated_at_ms)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(uid, routine_id) DO UPDATE SET
+      updated_at_ms = excluded.updated_at_ms
+  `).run(uid, input.routineId, now, now);
+
+  return true;
+};
+
 export const listSessions = (db: Database, uid: string, limit = 500): WorkoutSessionOutput[] => {
   const rows = db.query<{
     id: string;
@@ -808,6 +967,22 @@ export const listSessions = (db: Database, uid: string, limit = 500): WorkoutSes
       exercises
     };
   });
+};
+
+export const getCompetitiveLeaderboard = (
+  db: Database,
+  requesterUid: string,
+  limit = 10
+): CompetitiveLeaderboardOutput => {
+  const safeLimit = Math.min(50, Math.max(1, Math.floor(limit)));
+  const now = new Date();
+  const weekStartMs = getStartOfWeekMs(now);
+  const monthStartMs = getStartOfMonthMs(now);
+
+  return {
+    week: listLeaderboardByPeriod(db, requesterUid, weekStartMs, safeLimit),
+    month: listLeaderboardByPeriod(db, requesterUid, monthStartMs, safeLimit)
+  };
 };
 
 export const startSession = (db: Database, uid: string, input: WorkoutSessionInput): WorkoutSessionOutput => {
