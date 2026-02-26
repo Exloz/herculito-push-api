@@ -57,7 +57,7 @@ Guarda las claves en variables de entorno del deploy.
 
 ### Autenticación
 
-Todos los endpoints `POST` requieren header:
+Todos los endpoints de API privada (`GET` y `POST` bajo `/v1/data/*`, `/v1/musclewiki/*`, `/v1/rest/*`, `/v1/push/subscribe`) requieren header:
 - `Authorization: Bearer <clerk-jwt>`
 
 El token se obtiene desde el cliente con Clerk (`getToken({ template: 'herculito_api' })`).

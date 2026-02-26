@@ -219,6 +219,10 @@ const isValidNumber = (value: unknown): value is number => {
   return typeof value === 'number' && Number.isFinite(value);
 };
 
+const isValidIntegerInRange = (value: unknown, min: number, max: number): value is number => {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
+};
+
 const isBoolean = (value: unknown): value is boolean => {
   return typeof value === 'boolean';
 };
@@ -772,6 +776,32 @@ const logInfo = (payload: Record<string, unknown>): void => {
   );
 };
 
+const logError = (payload: Record<string, unknown>): void => {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      ts: new Date().toISOString(),
+      ...payload
+    })
+  );
+};
+
+const toErrorDetails = (error: unknown): { errorName?: string; errorMessage?: string; errorStack?: string } => {
+  if (error instanceof Error) {
+    return {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorStack: error.stack
+    };
+  }
+
+  if (typeof error === 'string') {
+    return { errorMessage: error };
+  }
+
+  return {};
+};
+
 
 const logRequestIn = (meta: RequestLogMeta): void => {
   logInfo({
@@ -826,8 +856,9 @@ const isValidExerciseEntry = (
   if (!value || typeof value !== 'object') return false;
   const entry = value as Record<string, unknown>;
   if (!isNonEmptyString(entry.id) || !isNonEmptyString(entry.name)) return false;
-  if (!isValidNumber(entry.sets) || !isValidNumber(entry.reps)) return false;
-  if (entry.restTime !== undefined && !isValidNumber(entry.restTime)) return false;
+  if (!isValidIntegerInRange(entry.sets, 1, 20)) return false;
+  if (!isValidIntegerInRange(entry.reps, 1, 100)) return false;
+  if (entry.restTime !== undefined && !isValidIntegerInRange(entry.restTime, 0, 3600)) return false;
   return true;
 };
 
@@ -841,6 +872,7 @@ const isValidExerciseList = (value: unknown): value is Array<{
 
 const SCHEDULER_BATCH_SIZE = 50;
 const SCHEDULER_MAX_JOBS_PER_TICK = 200;
+let schedulerRunning = false;
 const getRetryDelayMs = (attempts: number): number => {
   const base = 5_000;
   const delay = base * Math.pow(2, Math.max(0, attempts - 1));
@@ -911,7 +943,19 @@ const schedulerTick = async (): Promise<void> => {
 };
 
 setInterval(() => {
-  void schedulerTick();
+  if (schedulerRunning) {
+    return;
+  }
+
+  schedulerRunning = true;
+  void schedulerTick().catch((error) => {
+    logError({
+      event: 'scheduler_error',
+      ...toErrorDetails(error)
+    });
+  }).finally(() => {
+    schedulerRunning = false;
+  });
 }, 750);
 
 const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> => {
@@ -1031,7 +1075,11 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_name_or_category' }, { status: 400 }), env.allowedOrigins);
     }
 
-    if (!isValidNumber(body.sets) || !isValidNumber(body.reps) || !isValidNumber(body.restTime)) {
+    if (
+      !isValidIntegerInRange(body.sets, 1, 20)
+      || !isValidIntegerInRange(body.reps, 1, 100)
+      || !isValidIntegerInRange(body.restTime, 0, 3600)
+    ) {
       return withCors(req, json({ error: 'invalid_defaults' }, { status: 400 }), env.allowedOrigins);
     }
 
@@ -1064,14 +1112,14 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/exercises/use') {
-    await requireAuth(req, meta);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseUsageBody>(req);
 
     if (!isNonEmptyString(body.id)) {
       return withCors(req, json({ error: 'invalid_exercise_id' }, { status: 400 }), env.allowedOrigins);
     }
 
-    incrementExerciseUsage(db, body.id);
+    incrementExerciseUsage(db, uid, body.id);
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 
@@ -1123,14 +1171,14 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/routines/use') {
-    await requireAuth(req, meta);
+    const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<RoutineUsageBody>(req);
 
     if (!isNonEmptyString(body.id)) {
       return withCors(req, json({ error: 'invalid_routine_id' }, { status: 400 }), env.allowedOrigins);
     }
 
-    incrementRoutineUsage(db, body.id);
+    incrementRoutineUsage(db, uid, body.id);
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
 
@@ -1186,13 +1234,22 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_started_at' }, { status: 400 }), env.allowedOrigins);
     }
 
-    const session = startSession(db, uid, {
-      id: body.id,
-      routineId: body.routineId,
-      routineName: body.routineName,
-      primaryMuscleGroup: body.primaryMuscleGroup,
-      startedAt: body.startedAt
-    });
+    let session;
+    try {
+      session = startSession(db, uid, {
+        id: body.id,
+        routineId: body.routineId,
+        routineName: body.routineName,
+        primaryMuscleGroup: body.primaryMuscleGroup,
+        startedAt: body.startedAt
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'session_id_conflict') {
+        return withCors(req, json({ error: 'session_id_conflict' }, { status: 409 }), env.allowedOrigins);
+      }
+      throw error;
+    }
+
     return withCors(req, json({ session }), env.allowedOrigins);
   }
 
@@ -1217,8 +1274,9 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
     }
 
     const completedAt = isValidNumber(body.completedAt) ? body.completedAt : Date.now();
-    const totalDurationSec = isValidNumber(body.totalDuration) ? body.totalDuration : 0;
-    const totalDurationMin = Math.max(1, Math.round(totalDurationSec / 60));
+    const totalDurationMin = isValidNumber(body.totalDuration)
+      ? Math.max(1, Math.round(body.totalDuration))
+      : 1;
     completeSession(db, uid, body.sessionId, body.exercises, completedAt, totalDurationMin);
     return withCors(req, json({ ok: true }), env.allowedOrigins);
   }
@@ -1327,6 +1385,14 @@ Bun.serve({
           return withCors(req, error, env.allowedOrigins);
         }
 
+        logError({
+          event: 'api_error',
+          requestId: 'health',
+          method: req.method,
+          path: url.pathname,
+          ...toErrorDetails(error)
+        });
+
         return withCors(req, json({ error: 'internal_error' }, { status: 500 }), env.allowedOrigins);
       }
     }
@@ -1350,6 +1416,16 @@ Bun.serve({
         logRequestOut(meta, res.status);
         return res;
       }
+
+      logError({
+        event: 'api_error',
+        requestId: meta.requestId,
+        method: meta.method,
+        path: meta.path,
+        uid: meta.uid,
+        durationMs: Date.now() - meta.startedAtMs,
+        ...toErrorDetails(error)
+      });
 
       const res = withCors(req, json({ error: 'internal_error' }, { status: 500 }), env.allowedOrigins);
       logRequestOut(meta, res.status);

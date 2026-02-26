@@ -7,3 +7,6 @@ dist
 *.sqlite-journal
 serviceAccount.json
 .DS_Store
+firestore-export*.json
+firebase-auth-users.json
+clerk-import-report.json

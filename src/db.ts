@@ -24,6 +24,8 @@ export const createDb = (databasePath: string): Database => {
   const db = new Database(databasePath);
 
   db.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
 

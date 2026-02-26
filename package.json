@@ -7,6 +7,7 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "check": "tsc -p tsconfig.json --noEmit",
+    "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "migrate:json": "bun scripts/migrate-from-json.ts",
     "export:firestore": "bun scripts/export-firestore.ts",
     "export:firebase-users": "bun scripts/export-firebase-auth-users.ts",

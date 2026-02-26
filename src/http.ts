@@ -15,13 +15,41 @@ export const getJsonBody = async <T>(req: Request, maxBytes = DEFAULT_MAX_BODY_B
   const lengthHeader = req.headers.get('content-length');
   if (lengthHeader) {
     const length = Number(lengthHeader);
-    if (Number.isFinite(length) && length > maxBytes) {
+    if (Number.isFinite(length) && (length < 0 || length > maxBytes)) {
       throw json({ error: 'payload_too_large' }, { status: 413 });
     }
   }
 
+  if (!req.body) {
+    throw json({ error: 'invalid_json' }, { status: 400 });
+  }
+
+  const reader = req.body.getReader();
+  const decoder = new TextDecoder();
+  let receivedBytes = 0;
+  let rawBody = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    receivedBytes += value.byteLength;
+    if (receivedBytes > maxBytes) {
+      throw json({ error: 'payload_too_large' }, { status: 413 });
+    }
+
+    rawBody += decoder.decode(value, { stream: true });
+  }
+
+  rawBody += decoder.decode();
+
+  if (!rawBody.trim()) {
+    throw json({ error: 'invalid_json' }, { status: 400 });
+  }
+
   try {
-    return (await req.json()) as T;
+    return JSON.parse(rawBody) as T;
   } catch {
     throw json({ error: 'invalid_json' }, { status: 400 });
   }

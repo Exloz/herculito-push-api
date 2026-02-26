@@ -59,12 +59,18 @@ export const loadEnv = (): Env => {
     throw new Error('Invalid PORT');
   }
 
+  const isProduction = (Bun.env.NODE_ENV ?? '').toLowerCase() === 'production';
+  const allowedOriginsRaw = Bun.env.ALLOWED_ORIGINS;
+  if (isProduction && (!allowedOriginsRaw || allowedOriginsRaw.trim().length === 0)) {
+    throw new Error('Missing ALLOWED_ORIGINS in production');
+  }
+
   const clerkIssuer = normalizeIssuer(requireEnv('CLERK_ISSUER'));
 
   return {
     port,
     databasePath: Bun.env.DATABASE_PATH ?? '/data/push.sqlite',
-    allowedOrigins: parseAllowedOrigins(Bun.env.ALLOWED_ORIGINS),
+    allowedOrigins: parseAllowedOrigins(allowedOriginsRaw),
     clerkIssuer,
     clerkJwksUrl: resolveClerkJwksUrl(clerkIssuer),
     clerkAudience: parseCsv(Bun.env.CLERK_AUDIENCE),

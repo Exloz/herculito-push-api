@@ -589,8 +589,13 @@ export const updateExercise = (db: Database, uid: string, exerciseId: string, up
   }
 };
 
-export const incrementExerciseUsage = (db: Database, exerciseId: string): void => {
-  db.query(`UPDATE exercises SET times_used = times_used + 1 WHERE id = ?`).run(exerciseId);
+export const incrementExerciseUsage = (db: Database, uid: string, exerciseId: string): void => {
+  db.query(`
+    UPDATE exercises
+    SET times_used = times_used + 1
+    WHERE id = ?
+      AND (created_by_uid = ? OR is_public = 1)
+  `).run(exerciseId, uid);
 };
 
 export const listRoutines = (db: Database, uid: string, limit?: number): RoutineOutput[] => {
@@ -869,8 +874,13 @@ export const deleteRoutine = (db: Database, uid: string, routineId: string): voi
   db.query(`DELETE FROM routines WHERE id = ? AND owner_uid = ?`).run(routineId, uid);
 };
 
-export const incrementRoutineUsage = (db: Database, routineId: string): void => {
-  db.query(`UPDATE routines SET times_used = times_used + 1 WHERE id = ?`).run(routineId);
+export const incrementRoutineUsage = (db: Database, uid: string, routineId: string): void => {
+  db.query(`
+    UPDATE routines
+    SET times_used = times_used + 1
+    WHERE id = ?
+      AND (owner_uid = ? OR is_public = 1)
+  `).run(routineId, uid);
 };
 
 export const listHiddenPublicRoutineIds = (db: Database, uid: string): string[] => {
@@ -981,7 +991,20 @@ export const getCompetitiveLeaderboard = (
 
 export const startSession = (db: Database, uid: string, input: WorkoutSessionInput): WorkoutSessionOutput => {
   const now = Date.now();
-  const sessionId = input.id ?? (globalThis.crypto?.randomUUID?.() ?? `${now}_${Math.random().toString(16).slice(2)}`);
+  const fallbackSessionId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const requestedSessionId = input.id?.trim();
+  let sessionId = requestedSessionId && requestedSessionId.length > 0 ? requestedSessionId : fallbackSessionId();
+
+  if (requestedSessionId) {
+    const owner = db.query<{ uid: string }, [string]>(`
+      SELECT uid FROM workout_sessions WHERE id = ? LIMIT 1
+    `).get(requestedSessionId);
+
+    if (owner && owner.uid !== uid) {
+      throw new Error('session_id_conflict');
+    }
+  }
+
   const startedAt = input.startedAt ?? now;
   const exercisesJson = input.exercises ? JSON.stringify(input.exercises) : JSON.stringify([]);
 
