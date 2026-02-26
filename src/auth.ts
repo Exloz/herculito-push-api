@@ -13,33 +13,61 @@ const getBearerToken = (req: Request): string | null => {
   return match?.[1] ?? null;
 };
 
-const getFirebaseIssuer = (projectId: string): string => `https://securetoken.google.com/${projectId}`;
+const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
-const jwks = createRemoteJWKSet(
-  new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com')
-);
+const getJwks = (jwksUrl: string) => {
+  const cached = jwksCache.get(jwksUrl);
+  if (cached) return cached;
 
-export const requireFirebaseAuth = async (req: Request, projectId: string): Promise<AuthContext> => {
+  const created = createRemoteJWKSet(new URL(jwksUrl));
+  jwksCache.set(jwksUrl, created);
+  return created;
+};
+
+const toStringClaim = (payload: JWTPayload, key: string): string | undefined => {
+  const value = payload[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+};
+
+export interface ClerkAuthOptions {
+  issuer: string;
+  jwksUrl: string;
+  audience?: string[];
+}
+
+export const requireClerkAuth = async (req: Request, options: ClerkAuthOptions): Promise<AuthContext> => {
   const token = getBearerToken(req);
   if (!token) {
     throw json({ error: 'missing_auth' }, { status: 401 });
   }
 
   try {
-    const { payload } = await jwtVerify(token, jwks, {
-      issuer: getFirebaseIssuer(projectId),
-      audience: projectId,
+    const verifyOptions: {
+      issuer: string;
+      audience?: string | string[];
+      clockTolerance: string;
+    } = {
+      issuer: options.issuer,
       clockTolerance: '5s'
-    });
+    };
 
-    const uid = typeof payload.user_id === 'string' ? payload.user_id : typeof payload.sub === 'string' ? payload.sub : null;
+    if (options.audience && options.audience.length > 0) {
+      verifyOptions.audience = options.audience.length === 1 ? options.audience[0] : options.audience;
+    }
+
+    const { payload } = await jwtVerify(token, getJwks(options.jwksUrl), verifyOptions);
+
+    const legacyUid = toStringClaim(payload, 'legacy_uid') ?? toStringClaim(payload, 'external_id');
+    const uid = legacyUid
+      ?? toStringClaim(payload, 'clerk_user_id')
+      ?? toStringClaim(payload, 'user_id')
+      ?? (typeof payload.sub === 'string' ? payload.sub : null);
+
     if (!uid) {
       throw new Error('Missing uid');
     }
 
-    const email = typeof (payload as JWTPayload & { email?: unknown }).email === 'string'
-      ? (payload as JWTPayload & { email?: string }).email
-      : undefined;
+    const email = toStringClaim(payload, 'email');
 
     return { uid, email };
   } catch {

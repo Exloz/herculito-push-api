@@ -14,7 +14,7 @@ Requisitos clave en iOS:
 
 Implementado:
 - Bun API con SQLite (persistencia) y scheduler interno.
-- Validación de Firebase ID Token (Authorization Bearer) usando `jose` + JWKS remoto.
+- Validación de JWT de Clerk (Authorization Bearer) usando `jose` + JWKS remoto.
 - VAPID configurado con `web-push`.
 - Endpoints:
   - `GET /health`
@@ -34,7 +34,7 @@ Pendiente en el sistema completo (fuera de este repo):
 ## Variables de entorno
 
 Obligatorias:
-- `FIREBASE_PROJECT_ID`: Project ID de Firebase (aud/issuer para tokens).
+- `CLERK_ISSUER`: Issuer de Clerk para verificar JWT.
 - `VAPID_SUBJECT`: Ej. `mailto:tu@email.com`.
 - `VAPID_PUBLIC_KEY`: clave pública VAPID.
 - `VAPID_PRIVATE_KEY`: clave privada VAPID.
@@ -43,6 +43,8 @@ Opcionales:
 - `PORT`: por defecto `3000`.
 - `DATABASE_PATH`: por defecto `/data/push.sqlite`.
 - `ALLOWED_ORIGINS`: lista separada por comas para CORS. Por defecto permite `https://herculito.exloz.site` y `localhost`.
+- `CLERK_JWKS_URL`: si no se define, se usa `<CLERK_ISSUER>/.well-known/jwks.json`.
+- `CLERK_AUDIENCE`: audiences permitidos (CSV) para validar JWT de templates de Clerk.
 
 ## Generar VAPID keys
 
@@ -56,9 +58,9 @@ Guarda las claves en variables de entorno del deploy.
 ### Autenticación
 
 Todos los endpoints `POST` requieren header:
-- `Authorization: Bearer <firebase-id-token>`
+- `Authorization: Bearer <clerk-jwt>`
 
-El token se obtiene desde el cliente con Firebase Auth (`currentUser.getIdToken()`).
+El token se obtiene desde el cliente con Clerk (`getToken({ template: 'herculito_api' })`).
 
 ### `POST /v1/push/subscribe`
 
@@ -86,7 +88,7 @@ Cancela jobs pendientes para ese device.
 
 ## API de datos (SQLite)
 
-Todos los endpoints usan el mismo header de autenticacion Firebase.
+Todos los endpoints usan el mismo header de autenticacion con Clerk.
 
 Endpoints principales:
 - `GET /v1/data/exercises`
@@ -131,6 +133,34 @@ bun run export:firestore --service-account /ruta/serviceAccount.json --out fires
 Tambien puedes definir una variable de entorno en lugar del flag:
 - `FIREBASE_SERVICE_ACCOUNT_PATH`
 - `GOOGLE_APPLICATION_CREDENTIALS`
+
+## Migracion de usuarios a Clerk (sin perder historial)
+
+1) Exporta usuarios de Firebase Auth:
+
+```bash
+bun run export:firebase-users --service-account /ruta/serviceAccount.json --out firebase-auth-users.json
+```
+
+2) Importa/enlaza usuarios en Clerk usando `external_id = legacy_firebase_uid`:
+
+```bash
+CLERK_SECRET_KEY=sk_test_xxx bun run import:clerk-users --input firebase-auth-users.json --report clerk-import-report.json
+```
+
+Puedes simular primero:
+
+```bash
+CLERK_SECRET_KEY=sk_test_xxx bun run import:clerk-users --input firebase-auth-users.json --dry-run
+```
+
+3) Audita continuidad de identidad contra la data SQLite:
+
+```bash
+CLERK_SECRET_KEY=sk_test_xxx bun run audit:auth-migration --input firebase-auth-users.json --database /data/push.sqlite
+```
+
+Si `missingInClerk` queda vacio, todos los `uid` historicos con datos tienen match en Clerk `external_id`.
 
 ## Cómo corre el scheduler
 

@@ -9,6 +9,9 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "migrate:json": "bun scripts/migrate-from-json.ts",
     "export:firestore": "bun scripts/export-firestore.ts",
+    "export:firebase-users": "bun scripts/export-firebase-auth-users.ts",
+    "import:clerk-users": "bun scripts/import-clerk-users.ts",
+    "audit:auth-migration": "bun scripts/audit-auth-migration.ts",
     "cleanup:system": "bun scripts/cleanup-system-data.ts",
     "backfill:sessions": "bun scripts/backfill-sessions.ts"
   },

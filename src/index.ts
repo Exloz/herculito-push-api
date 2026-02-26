@@ -1,6 +1,6 @@
 import { loadEnv } from './env';
 import { corsPreflight, getJsonBody, json, withCors } from './http';
-import { requireFirebaseAuth } from './auth';
+import { requireClerkAuth } from './auth';
 import {
   completeSession,
   createExercise,
@@ -796,7 +796,11 @@ const logRequestOut = (meta: RequestLogMeta, status: number): void => {
 };
 
 const requireAuth = async (req: Request, meta?: RequestLogMeta) => {
-  const auth = await requireFirebaseAuth(req, env.firebaseProjectId);
+  const auth = await requireClerkAuth(req, {
+    issuer: env.clerkIssuer,
+    jwksUrl: env.clerkJwksUrl,
+    audience: env.clerkAudience
+  });
   if (meta) {
     meta.uid = auth.uid;
   }

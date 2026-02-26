@@ -2,11 +2,33 @@ export interface Env {
   port: number;
   databasePath: string;
   allowedOrigins: string[];
-  firebaseProjectId: string;
+  clerkIssuer: string;
+  clerkJwksUrl: string;
+  clerkAudience: string[];
   vapidSubject: string;
   vapidPublicKey: string;
   vapidPrivateKey: string;
 }
+
+const parseCsv = (value: string | undefined): string[] => {
+  if (!value) return [];
+
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const normalizeIssuer = (issuer: string): string => issuer.endsWith('/') ? issuer.slice(0, -1) : issuer;
+
+const resolveClerkJwksUrl = (issuer: string): string => {
+  const explicit = Bun.env.CLERK_JWKS_URL;
+  if (explicit && explicit.trim().length > 0) {
+    return explicit.trim();
+  }
+
+  return `${normalizeIssuer(issuer)}/.well-known/jwks.json`;
+};
 
 const parseAllowedOrigins = (value: string | undefined): string[] => {
   if (!value) {
@@ -37,11 +59,15 @@ export const loadEnv = (): Env => {
     throw new Error('Invalid PORT');
   }
 
+  const clerkIssuer = normalizeIssuer(requireEnv('CLERK_ISSUER'));
+
   return {
     port,
     databasePath: Bun.env.DATABASE_PATH ?? '/data/push.sqlite',
     allowedOrigins: parseAllowedOrigins(Bun.env.ALLOWED_ORIGINS),
-    firebaseProjectId: requireEnv('FIREBASE_PROJECT_ID'),
+    clerkIssuer,
+    clerkJwksUrl: resolveClerkJwksUrl(clerkIssuer),
+    clerkAudience: parseCsv(Bun.env.CLERK_AUDIENCE),
     vapidSubject: requireEnv('VAPID_SUBJECT'),
     vapidPublicKey: requireEnv('VAPID_PUBLIC_KEY'),
     vapidPrivateKey: requireEnv('VAPID_PRIVATE_KEY')
