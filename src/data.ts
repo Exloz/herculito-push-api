@@ -169,6 +169,9 @@ const makeCustomExerciseId = (): string => {
   return `custom:${id}`;
 };
 
+const ROUTINE_EXERCISE_QUERY_CHUNK_SIZE = 400;
+const SESSION_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
 const getStartOfWeekMs = (referenceDate = new Date()): number => {
   const startOfWeek = new Date(referenceDate);
   const dayOfWeek = startOfWeek.getDay();
@@ -367,9 +370,14 @@ export const createExercise = (db: Database, uid: string, input: ExerciseInput):
     let exerciseId = input.video?.slug ? `mw:${input.video.slug}` : '';
 
     if (!exerciseId) {
-      const existingByName = db.query<{ id: string }, [string, string]>(`
-        SELECT id FROM exercises WHERE normalized_name = ? AND category = ? LIMIT 1
-      `).get(normalizedName, input.category);
+      const existingByName = db.query<{ id: string }, [string, string, string]>(`
+        SELECT id
+        FROM exercises
+        WHERE normalized_name = ?
+          AND category = ?
+          AND (is_public = 1 OR created_by_uid = ?)
+        LIMIT 1
+      `).get(normalizedName, input.category, uid);
       if (existingByName?.id) {
         exerciseId = existingByName.id;
       }
@@ -507,6 +515,7 @@ export const createExercise = (db: Database, uid: string, input: ExerciseInput):
 
 export const updateExercise = (db: Database, uid: string, exerciseId: string, updates: Partial<ExerciseInput>): void => {
   const now = Date.now();
+  const updatesRecord = updates as Record<string, unknown>;
 
   const ownerRow = db.query<{ created_by_uid: string | null }, [string]>(`
     SELECT created_by_uid FROM exercises WHERE id = ? LIMIT 1
@@ -529,9 +538,14 @@ export const updateExercise = (db: Database, uid: string, exerciseId: string, up
     values.push(updates.category);
   }
 
-  if (typeof updates.description === 'string' && isOwner) {
-    fields.push('description = ?');
-    values.push(updates.description);
+  if (isOwner && updatesRecord.description !== undefined) {
+    if (typeof updatesRecord.description === 'string') {
+      fields.push('description = ?');
+      values.push(updatesRecord.description);
+    } else if (updatesRecord.description === null) {
+      fields.push('description = ?');
+      values.push(null);
+    }
   }
 
   if (typeof updates.isPublic === 'boolean' && isOwner) {
@@ -547,9 +561,14 @@ export const updateExercise = (db: Database, uid: string, exerciseId: string, up
     }
   }
 
-  if (updates.muscleGroup && isOwner) {
-    fields.push('muscle_group = ?');
-    values.push(updates.muscleGroup);
+  if (isOwner && updatesRecord.muscleGroup !== undefined) {
+    if (typeof updatesRecord.muscleGroup === 'string' && updatesRecord.muscleGroup.trim().length > 0) {
+      fields.push('muscle_group = ?');
+      values.push(updatesRecord.muscleGroup);
+    } else if (updatesRecord.muscleGroup === null) {
+      fields.push('muscle_group = ?');
+      values.push(null);
+    }
   }
 
   if (fields.length > 0) {
@@ -661,8 +680,7 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
   }
 
   const routineIds = routines.map((routine) => routine.id);
-  const placeholders = routineIds.map(() => '?').join(', ');
-  const exercises = db.query<{
+  const exercises: Array<{
     routine_id: string;
     exercise_id: string;
     display_name: string | null;
@@ -671,13 +689,30 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
     rest_time_s: number | null;
     name: string | null;
     video_json: string | null;
-  }, string[]>(`
-    SELECT re.routine_id, re.exercise_id, re.display_name, re.sets, re.reps, re.rest_time_s, e.name, e.video_json
-    FROM routine_exercises re
-    LEFT JOIN exercises e ON e.id = re.exercise_id
-    WHERE re.routine_id IN (${placeholders})
-    ORDER BY re.routine_id ASC, re.position ASC
-  `).all(...routineIds);
+  }> = [];
+
+  for (let index = 0; index < routineIds.length; index += ROUTINE_EXERCISE_QUERY_CHUNK_SIZE) {
+    const batchIds = routineIds.slice(index, index + ROUTINE_EXERCISE_QUERY_CHUNK_SIZE);
+    if (batchIds.length === 0) continue;
+    const placeholders = batchIds.map(() => '?').join(', ');
+    const batch = db.query<{
+      routine_id: string;
+      exercise_id: string;
+      display_name: string | null;
+      sets: number;
+      reps: number;
+      rest_time_s: number | null;
+      name: string | null;
+      video_json: string | null;
+    }, string[]>(`
+      SELECT re.routine_id, re.exercise_id, re.display_name, re.sets, re.reps, re.rest_time_s, e.name, e.video_json
+      FROM routine_exercises re
+      LEFT JOIN exercises e ON e.id = re.exercise_id
+      WHERE re.routine_id IN (${placeholders})
+      ORDER BY re.routine_id ASC, re.position ASC
+    `).all(...batchIds);
+    exercises.push(...batch);
+  }
 
   const exercisesByRoutine = new Map<string, RoutineInput['exercises']>();
   exercises.forEach((exercise) => {
@@ -715,6 +750,15 @@ export const createRoutine = (db: Database, uid: string, input: RoutineInput): R
     const now = Date.now();
     const routineId = input.id ?? (globalThis.crypto?.randomUUID?.() ?? `${now}_${Math.random().toString(16).slice(2)}`);
     const isPublic = input.isPublic === true;
+
+    if (input.id) {
+      const existing = db.query<{ id: string }, [string]>(`
+        SELECT id FROM routines WHERE id = ? LIMIT 1
+      `).get(routineId);
+      if (existing) {
+        throw new Error('routine_id_conflict');
+      }
+    }
 
     db.query(`
       INSERT INTO routines (
@@ -792,6 +836,7 @@ export const createRoutine = (db: Database, uid: string, input: RoutineInput): R
 
 export const updateRoutine = (db: Database, uid: string, routineId: string, updates: Partial<RoutineInput>): void => {
   const now = Date.now();
+  const updatesRecord = updates as Record<string, unknown>;
   const owner = db.query<{ owner_uid: string }, [string, string]>(`
     SELECT owner_uid FROM routines WHERE id = ? AND owner_uid = ? LIMIT 1
   `).get(routineId, uid);
@@ -809,9 +854,14 @@ export const updateRoutine = (db: Database, uid: string, routineId: string, upda
       values.push(updates.name);
     }
 
-    if (typeof updates.description === 'string') {
-      fields.push('description = ?');
-      values.push(updates.description);
+    if (updatesRecord.description !== undefined) {
+      if (typeof updatesRecord.description === 'string') {
+        fields.push('description = ?');
+        values.push(updatesRecord.description);
+      } else if (updatesRecord.description === null) {
+        fields.push('description = ?');
+        values.push(null);
+      }
     }
 
     if (typeof updates.isPublic === 'boolean') {
@@ -819,9 +869,14 @@ export const updateRoutine = (db: Database, uid: string, routineId: string, upda
       values.push(updates.isPublic ? 1 : 0);
     }
 
-    if (updates.primaryMuscleGroup) {
-      fields.push('primary_muscle_group = ?');
-      values.push(updates.primaryMuscleGroup);
+    if (updatesRecord.primaryMuscleGroup !== undefined) {
+      if (typeof updatesRecord.primaryMuscleGroup === 'string' && updatesRecord.primaryMuscleGroup.trim().length > 0) {
+        fields.push('primary_muscle_group = ?');
+        values.push(updatesRecord.primaryMuscleGroup);
+      } else if (updatesRecord.primaryMuscleGroup === null) {
+        fields.push('primary_muscle_group = ?');
+        values.push(null);
+      }
     }
 
     if (fields.length > 0) {
@@ -993,7 +1048,7 @@ export const startSession = (db: Database, uid: string, input: WorkoutSessionInp
   const now = Date.now();
   const fallbackSessionId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const requestedSessionId = input.id?.trim();
-  let sessionId = requestedSessionId && requestedSessionId.length > 0 ? requestedSessionId : fallbackSessionId();
+  const sessionId = requestedSessionId && requestedSessionId.length > 0 ? requestedSessionId : fallbackSessionId();
 
   if (requestedSessionId) {
     const owner = db.query<{ uid: string }, [string]>(`
@@ -1067,11 +1122,29 @@ export const updateSessionProgress = (db: Database, uid: string, sessionId: stri
 
 export const completeSession = (db: Database, uid: string, sessionId: string, exercises: unknown[], completedAtMs: number, totalDurationMin: number): void => {
   const now = Date.now();
+  const session = db.query<{ started_at_ms: number }, [string, string]>(`
+    SELECT started_at_ms
+    FROM workout_sessions
+    WHERE id = ? AND uid = ?
+    LIMIT 1
+  `).get(sessionId, uid);
+
+  if (!session) {
+    return;
+  }
+
+  const maxCompletedAtMs = now + SESSION_CLOCK_SKEW_MS;
+  const safeCompletedAtMs = Math.max(session.started_at_ms, Math.min(completedAtMs, maxCompletedAtMs));
+  const inferredDurationMin = Math.max(1, Math.round((safeCompletedAtMs - session.started_at_ms) / 60000));
+  const safeDurationMin = Number.isFinite(totalDurationMin) && totalDurationMin >= 1 && totalDurationMin <= 24 * 60
+    ? Math.round(totalDurationMin)
+    : inferredDurationMin;
+
   db.query(`
     UPDATE workout_sessions
     SET exercises_json = ?, completed_at_ms = ?, total_duration_min = ?, updated_at_ms = ?
     WHERE id = ? AND uid = ?
-  `).run(JSON.stringify(exercises ?? []), completedAtMs, totalDurationMin, now, sessionId, uid);
+  `).run(JSON.stringify(exercises ?? []), safeCompletedAtMs, safeDurationMin, now, sessionId, uid);
 };
 
 export const upsertExerciseLog = (db: Database, uid: string, input: ExerciseLogInput): void => {
@@ -1122,10 +1195,10 @@ export const listExerciseLogsForDate = (db: Database, uid: string, date: string)
 export const listWorkouts = (db: Database, uid: string, limit?: number): WorkoutInput[] => {
   const rows = limit
     ? db.query<{ id: string; payload_json: string }, [string, number]>(`
-      SELECT id, payload_json FROM workouts WHERE uid = ? LIMIT ?
+      SELECT id, payload_json FROM workouts WHERE uid = ? ORDER BY updated_at_ms DESC LIMIT ?
     `).all(uid, limit)
     : db.query<{ id: string; payload_json: string }, [string]>(`
-      SELECT id, payload_json FROM workouts WHERE uid = ?
+      SELECT id, payload_json FROM workouts WHERE uid = ? ORDER BY updated_at_ms DESC
     `).all(uid);
   return rows
     .map((row) => safeJsonParse<WorkoutInput>(row.payload_json))

@@ -25,6 +25,7 @@ import {
 } from './data';
 import {
   cancelRestJob,
+  cleanupTerminalJobs,
   createDb,
   deactivateSubscription,
   getDueJobs,
@@ -42,6 +43,14 @@ import { initWebPush, sendPush, type PushPayload, type PushSubscriptionLike } fr
 
 const env = loadEnv();
 const db = createDb(env.databasePath);
+
+const MAX_COMMAND_CLOCK_DRIFT_MS = 5 * 60 * 1000;
+const MAX_COMMAND_STALENESS_MS = 24 * 60 * 60 * 1000;
+const MAX_SESSION_START_DRIFT_MS = 10 * 60 * 1000;
+const MAX_COMPLETION_CLOCK_DRIFT_MS = 24 * 60 * 60 * 1000;
+const MAX_SESSION_EXERCISES = 200;
+const MAX_EXERCISE_SETS = 100;
+const MAX_SET_WEIGHT = 5000;
 
 initWebPush({
   subject: env.vapidSubject,
@@ -227,16 +236,99 @@ const isBoolean = (value: unknown): value is boolean => {
   return typeof value === 'boolean';
 };
 
-const isValidCommandAtMs = (value: unknown): value is number => {
-  return isValidNumber(value) && value > 0;
-};
+const sanitizeCommandAtMs = (value: unknown): number => {
+  const now = Date.now();
+  if (!isValidNumber(value) || value <= 0) {
+    return now;
+  }
 
-const isValidOptionalNumber = (value: unknown): value is number | undefined => {
-  return value === undefined || isValidNumber(value);
+  const timestamp = Math.floor(value);
+  if (timestamp > now + MAX_COMMAND_CLOCK_DRIFT_MS) {
+    return now;
+  }
+
+  if (timestamp < now - MAX_COMMAND_STALENESS_MS) {
+    return now;
+  }
+
+  return timestamp;
 };
 
 const isValidDateKey = (value: unknown): value is string => {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+};
+
+const sanitizeSessionStartedAtMs = (value: unknown): number | undefined => {
+  if (value === undefined) return undefined;
+  if (!isValidNumber(value)) return undefined;
+  const now = Date.now();
+  const timestamp = Math.floor(value);
+  if (Math.abs(now - timestamp) > MAX_SESSION_START_DRIFT_MS) {
+    return now;
+  }
+  return timestamp;
+};
+
+const sanitizeCompletedAtMs = (value: unknown): number => {
+  const now = Date.now();
+  if (!isValidNumber(value)) return now;
+  const timestamp = Math.floor(value);
+  if (timestamp > now + MAX_COMPLETION_CLOCK_DRIFT_MS) {
+    return now;
+  }
+  return timestamp;
+};
+
+const isValidSetPayload = (value: unknown): boolean => {
+  if (!value || typeof value !== 'object') return false;
+  const set = value as Record<string, unknown>;
+
+  if (set.setNumber !== undefined && !isValidIntegerInRange(set.setNumber, 1, 200)) {
+    return false;
+  }
+
+  if (set.completed !== undefined && typeof set.completed !== 'boolean') {
+    return false;
+  }
+
+  if (set.weight !== undefined) {
+    if (!isValidNumber(set.weight) || set.weight < 0 || set.weight > MAX_SET_WEIGHT) {
+      return false;
+    }
+  }
+
+  if (set.completedAt !== undefined && set.completedAt !== null) {
+    const completedAt = set.completedAt;
+    if (typeof completedAt === 'number') {
+      if (!Number.isFinite(completedAt) || completedAt <= 0) return false;
+    } else if (typeof completedAt === 'string') {
+      if (!Number.isFinite(Date.parse(completedAt))) return false;
+    } else {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+const isValidSetsPayload = (value: unknown): value is unknown[] => {
+  return Array.isArray(value)
+    && value.length <= MAX_EXERCISE_SETS
+    && value.every((entry) => isValidSetPayload(entry));
+};
+
+const isValidSessionExercisePayload = (value: unknown): boolean => {
+  if (!value || typeof value !== 'object') return false;
+  const exercise = value as Record<string, unknown>;
+  if (!isNonEmptyString(exercise.exerciseId)) return false;
+  if (!isValidSetsPayload(exercise.sets)) return false;
+  return true;
+};
+
+const isValidSessionExercisesPayload = (value: unknown): value is unknown[] => {
+  return Array.isArray(value)
+    && value.length <= MAX_SESSION_EXERCISES
+    && value.every((exercise) => isValidSessionExercisePayload(exercise));
 };
 
 const makeRestJobId = (uid: string, deviceId: string): string => `${uid}:${deviceId}:rest`;
@@ -245,6 +337,8 @@ const MUSCLEWIKI_SITEMAP_URL = 'https://musclewiki.com/sitemap.xml';
 const MUSCLEWIKI_PAGE_BASE = 'https://musclewiki.com/es-es/exercise';
 const MUSCLEWIKI_SLUG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const MUSCLEWIKI_VIDEO_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MUSCLEWIKI_FETCH_TIMEOUT_MS = 10_000;
+const MUSCLEWIKI_VIDEO_CACHE_MAX_ENTRIES = 500;
 
 type MusclewikiCache = {
   slugs: string[];
@@ -615,8 +709,29 @@ const toDisplayName = (slug: string): string => {
     .join(' ');
 };
 
+const fetchWithTimeout = async (input: string, init?: RequestInit, timeoutMs = MUSCLEWIKI_FETCH_TIMEOUT_MS): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('musclewiki_timeout');
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+};
+
 const fetchMusclewikiSlugs = async (): Promise<string[]> => {
-  const res = await fetch(MUSCLEWIKI_SITEMAP_URL, {
+  const res = await fetchWithTimeout(MUSCLEWIKI_SITEMAP_URL, {
     headers: { 'user-agent': 'Mozilla/5.0 (compatible; HerculitoBot/1.0)' }
   });
   if (!res.ok) {
@@ -724,7 +839,7 @@ const selectDefaultVideo = (variants: Array<{ url: string; kind: string }>): str
 
 const fetchMusclewikiVideos = async (slug: string): Promise<MusclewikiVideoCacheEntry> => {
   const pageUrl = `${MUSCLEWIKI_PAGE_BASE}/${slug}`;
-  const res = await fetch(pageUrl, {
+  const res = await fetchWithTimeout(pageUrl, {
     headers: { 'user-agent': 'Mozilla/5.0 (compatible; HerculitoBot/1.0)' }
   });
   if (!res.ok) {
@@ -751,9 +866,25 @@ const getMusclewikiVideos = async (slug: string): Promise<MusclewikiVideoCacheEn
   const cached = musclewikiVideoCache.get(slug);
   const now = Date.now();
   if (cached && now - cached.fetchedAtMs < MUSCLEWIKI_VIDEO_CACHE_TTL_MS) {
+    musclewikiVideoCache.delete(slug);
+    musclewikiVideoCache.set(slug, cached);
     return cached;
   }
+
+  if (cached) {
+    musclewikiVideoCache.delete(slug);
+  }
+
   const entry = await fetchMusclewikiVideos(slug);
+
+  while (musclewikiVideoCache.size >= MUSCLEWIKI_VIDEO_CACHE_MAX_ENTRIES) {
+    const oldestKey = musclewikiVideoCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    musclewikiVideoCache.delete(oldestKey);
+  }
+
   musclewikiVideoCache.set(slug, entry);
   return entry;
 };
@@ -837,11 +968,11 @@ const requireAuth = async (req: Request, meta?: RequestLogMeta) => {
   return auth;
 };
 
-const isValidLimitParam = (value: string | null, max: number): number | undefined => {
-  if (!value) return undefined;
+const isValidLimitParam = (value: string | null, max: number, defaultWhenInvalid = max): number | undefined => {
+  if (value === null) return undefined;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 1 || parsed > max) return undefined;
-  return Math.floor(parsed);
+  if (!Number.isFinite(parsed) || parsed < 1) return defaultWhenInvalid;
+  return Math.min(max, Math.floor(parsed));
 };
 
 const isValidExerciseEntry = (
@@ -872,6 +1003,9 @@ const isValidExerciseList = (value: unknown): value is Array<{
 
 const SCHEDULER_BATCH_SIZE = 50;
 const SCHEDULER_MAX_JOBS_PER_TICK = 200;
+const TERMINAL_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const TERMINAL_JOB_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const TERMINAL_JOB_CLEANUP_BATCH = 500;
 let schedulerRunning = false;
 const getRetryDelayMs = (attempts: number): number => {
   const base = 5_000;
@@ -958,6 +1092,20 @@ setInterval(() => {
   });
 }, 750);
 
+setInterval(() => {
+  const removed = cleanupTerminalJobs(db, {
+    olderThanMs: Date.now() - TERMINAL_JOB_RETENTION_MS,
+    limit: TERMINAL_JOB_CLEANUP_BATCH
+  });
+
+  if (removed > 0) {
+    logInfo({
+      event: 'jobs_cleanup',
+      removed
+    });
+  }
+}, TERMINAL_JOB_CLEANUP_INTERVAL_MS);
+
 const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> => {
   if (req.method === 'OPTIONS') {
     return corsPreflight(req, env.allowedOrigins);
@@ -966,7 +1114,11 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
   const url = new URL(req.url);
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    return withCors(req, json({ ok: true }), env.allowedOrigins);
+    const probe = db.query<{ ok: number }, []>('SELECT 1 as ok').get();
+    if (!probe || probe.ok !== 1) {
+      return withCors(req, json({ ok: false, db: false }, { status: 503 }), env.allowedOrigins);
+    }
+    return withCors(req, json({ ok: true, db: true }), env.allowedOrigins);
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/push/vapidPublicKey') {
@@ -1027,7 +1179,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
 
     const jobId = makeRestJobId(uid, body.deviceId);
     const executeAtMs = Date.now() + Math.round(body.seconds * 1000);
-    const requestedAtMs = isValidCommandAtMs(body.commandAtMs) ? body.commandAtMs : Date.now();
+    const requestedAtMs = sanitizeCommandAtMs(body.commandAtMs);
 
     upsertJob(db, {
       id: jobId,
@@ -1049,7 +1201,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_device_id' }, { status: 400 }), env.allowedOrigins);
     }
 
-    const requestedAtMs = isValidCommandAtMs(body.commandAtMs) ? body.commandAtMs : Date.now();
+    const requestedAtMs = sanitizeCommandAtMs(body.commandAtMs);
     const jobId = makeRestJobId(uid, body.deviceId);
     const canceled = cancelRestJob(db, {
       id: jobId,
@@ -1138,7 +1290,16 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_routine' }, { status: 400 }), env.allowedOrigins);
     }
 
-    const routine = createRoutine(db, uid, body);
+    let routine;
+    try {
+      routine = createRoutine(db, uid, body);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'routine_id_conflict') {
+        return withCors(req, json({ error: 'routine_id_conflict' }, { status: 409 }), env.allowedOrigins);
+      }
+      throw error;
+    }
+
     return withCors(req, json({ routine }), env.allowedOrigins);
   }
 
@@ -1217,7 +1378,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
 
   if (req.method === 'GET' && url.pathname === '/v1/data/leaderboard') {
     const { uid } = await requireAuth(req, meta);
-    const limit = isValidLimitParam(url.searchParams.get('limit'), 50) ?? 10;
+    const limit = isValidLimitParam(url.searchParams.get('limit'), 50, 10) ?? 10;
     const leaderboard = getCompetitiveLeaderboard(db, uid, limit);
     return withCors(req, json(leaderboard), env.allowedOrigins);
   }
@@ -1230,7 +1391,8 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_routine_name' }, { status: 400 }), env.allowedOrigins);
     }
 
-    if (!isValidOptionalNumber(body.startedAt)) {
+    const sanitizedStartedAt = sanitizeSessionStartedAtMs(body.startedAt);
+    if (body.startedAt !== undefined && sanitizedStartedAt === undefined) {
       return withCors(req, json({ error: 'invalid_started_at' }, { status: 400 }), env.allowedOrigins);
     }
 
@@ -1241,7 +1403,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
         routineId: body.routineId,
         routineName: body.routineName,
         primaryMuscleGroup: body.primaryMuscleGroup,
-        startedAt: body.startedAt
+        startedAt: sanitizedStartedAt
       });
     } catch (error) {
       if (error instanceof Error && error.message === 'session_id_conflict') {
@@ -1257,7 +1419,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
     const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<SessionProgressBody>(req);
 
-    if (!isNonEmptyString(body.sessionId) || !Array.isArray(body.exercises)) {
+    if (!isNonEmptyString(body.sessionId) || !isValidSessionExercisesPayload(body.exercises)) {
       return withCors(req, json({ error: 'invalid_session' }, { status: 400 }), env.allowedOrigins);
     }
 
@@ -1269,13 +1431,13 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
     const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<SessionCompleteBody>(req);
 
-    if (!isNonEmptyString(body.sessionId) || !Array.isArray(body.exercises)) {
+    if (!isNonEmptyString(body.sessionId) || !isValidSessionExercisesPayload(body.exercises)) {
       return withCors(req, json({ error: 'invalid_session' }, { status: 400 }), env.allowedOrigins);
     }
 
-    const completedAt = isValidNumber(body.completedAt) ? body.completedAt : Date.now();
+    const completedAt = sanitizeCompletedAtMs(body.completedAt);
     const totalDurationMin = isValidNumber(body.totalDuration)
-      ? Math.max(1, Math.round(body.totalDuration))
+      ? Math.min(24 * 60, Math.max(1, Math.round(body.totalDuration)))
       : 1;
     completeSession(db, uid, body.sessionId, body.exercises, completedAt, totalDurationMin);
     return withCors(req, json({ ok: true }), env.allowedOrigins);
@@ -1285,7 +1447,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
     const { uid } = await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseLogBody>(req);
 
-    if (!isNonEmptyString(body.exerciseId) || !isValidDateKey(body.date) || !Array.isArray(body.sets)) {
+    if (!isNonEmptyString(body.exerciseId) || !isValidDateKey(body.date) || !isValidSetsPayload(body.sets)) {
       return withCors(req, json({ error: 'invalid_exercise_log' }, { status: 400 }), env.allowedOrigins);
     }
 

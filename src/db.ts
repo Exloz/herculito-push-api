@@ -55,6 +55,7 @@ export const createDb = (databasePath: string): Database => {
     );
 
     CREATE INDEX IF NOT EXISTS jobs_execute_at_idx ON jobs (status, execute_at_ms);
+    CREATE INDEX IF NOT EXISTS jobs_status_updated_idx ON jobs (status, updated_at_ms);
 
     CREATE TABLE IF NOT EXISTS exercises (
       id TEXT PRIMARY KEY,
@@ -170,6 +171,7 @@ export const createDb = (databasePath: string): Database => {
     );
 
     CREATE INDEX IF NOT EXISTS workout_sessions_user_idx ON workout_sessions (uid, started_at_ms);
+    CREATE INDEX IF NOT EXISTS workout_sessions_completed_idx ON workout_sessions (completed_at_ms, uid);
 
     CREATE TABLE IF NOT EXISTS exercise_logs (
       id TEXT PRIMARY KEY,
@@ -192,6 +194,8 @@ export const createDb = (databasePath: string): Database => {
       updated_at_ms INTEGER NOT NULL,
       PRIMARY KEY (uid, id)
     );
+
+    CREATE INDEX IF NOT EXISTS workouts_uid_updated_idx ON workouts (uid, updated_at_ms DESC);
   `);
 
   // Best-effort migration: older deployments had workouts(id PK) without uid.
@@ -217,8 +221,13 @@ export const createDb = (databasePath: string): Database => {
 
     // Ensure index for current schema.
     db.exec(`CREATE INDEX IF NOT EXISTS workouts_uid_idx ON workouts (uid);`);
-  } catch {
-    // ignore migration failures (schema will still be created on fresh DBs)
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: 'warn',
+      event: 'db_migration_warning',
+      migration: 'workouts_uid',
+      error: error instanceof Error ? error.message : String(error)
+    }));
   }
 
   // Best-effort migration: ensure jobs has requested_at_ms for command ordering.
@@ -229,8 +238,13 @@ export const createDb = (databasePath: string): Database => {
       db.exec(`ALTER TABLE jobs ADD COLUMN requested_at_ms INTEGER NOT NULL DEFAULT 0;`);
       db.exec(`UPDATE jobs SET requested_at_ms = COALESCE(updated_at_ms, created_at_ms, 0) WHERE requested_at_ms = 0;`);
     }
-  } catch {
-    // ignore migration failures
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: 'warn',
+      event: 'db_migration_warning',
+      migration: 'jobs_requested_at',
+      error: error instanceof Error ? error.message : String(error)
+    }));
   }
 
   return db;
@@ -402,4 +416,23 @@ export const markJobFailed = (db: Database, jobId: string, requestedAtMs: number
     SET status = 'failed', updated_at_ms = ?
     WHERE id = ? AND status = 'sending' AND requested_at_ms = ?
   `).run(now, jobId, requestedAtMs);
+};
+
+export const cleanupTerminalJobs = (db: Database, args: {
+  olderThanMs: number;
+  limit: number;
+}): number => {
+  const result = db.query(`
+    DELETE FROM jobs
+    WHERE id IN (
+      SELECT id
+      FROM jobs
+      WHERE status IN ('sent', 'canceled', 'failed')
+        AND updated_at_ms < ?
+      ORDER BY updated_at_ms ASC
+      LIMIT ?
+    )
+  `).run(args.olderThanMs, args.limit);
+
+  return Number(result.changes ?? 0);
 };

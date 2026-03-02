@@ -4,7 +4,7 @@ export const json = (data: unknown, init?: ResponseInit): Response => {
   return new Response(JSON.stringify(data), { ...init, headers });
 };
 
-const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
 export const getJsonBody = async <T>(req: Request, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<T> => {
   const contentType = req.headers.get('content-type') ?? '';
