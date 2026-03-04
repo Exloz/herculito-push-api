@@ -162,6 +162,12 @@ type RoutineVisibilityBody = {
   visible: boolean;
 };
 
+type ProfileSyncBody = {
+  displayName?: string;
+  avatarUrl?: string;
+  email?: string;
+};
+
 type SessionStartBody = {
   id?: string;
   routineId?: string;
@@ -1228,8 +1234,32 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
     return withCors(req, json({ exercises }), env.allowedOrigins);
   }
 
+  if (req.method === 'POST' && url.pathname === '/v1/data/profile') {
+    const auth = await requireAuth(req, meta);
+    const body = await getJsonBody<ProfileSyncBody>(req);
+
+    const displayName = isNonEmptyString(body.displayName)
+      ? body.displayName.trim()
+      : auth.displayName;
+    const avatarUrl = isNonEmptyString(body.avatarUrl)
+      ? body.avatarUrl.trim()
+      : auth.avatarUrl;
+    const email = isNonEmptyString(body.email)
+      ? body.email.trim().toLowerCase()
+      : auth.email;
+
+    upsertUserProfile(db, {
+      uid: auth.uid,
+      displayName,
+      avatarUrl,
+      email
+    });
+
+    return withCors(req, json({ ok: true }), env.allowedOrigins);
+  }
+
   if (req.method === 'POST' && url.pathname === '/v1/data/exercises') {
-    const { uid } = await requireAuth(req, meta);
+    const auth = await requireAuth(req, meta);
     const body = await getJsonBody<ExerciseCreateBody>(req);
 
     if (!isNonEmptyString(body.name) || !isNonEmptyString(body.category)) {
@@ -1244,7 +1274,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       return withCors(req, json({ error: 'invalid_defaults' }, { status: 400 }), env.allowedOrigins);
     }
 
-    const exercise = createExercise(db, uid, {
+    const exercise = createExercise(db, auth.uid, {
       name: body.name,
       category: body.category,
       sets: body.sets,
@@ -1252,7 +1282,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
       restTime: body.restTime,
       description: body.description,
       isPublic: body.isPublic,
-      createdByName: body.createdByName,
+      createdByName: auth.displayName ?? body.createdByName,
       muscleGroup: body.muscleGroup,
       video: body.video
     });
@@ -1292,7 +1322,7 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
   }
 
   if (req.method === 'POST' && url.pathname === '/v1/data/routines') {
-    const { uid } = await requireAuth(req, meta);
+    const auth = await requireAuth(req, meta);
     const body = await getJsonBody<RoutineCreateBody>(req);
 
     if (!isNonEmptyString(body.name) || !isValidExerciseList(body.exercises)) {
@@ -1301,7 +1331,10 @@ const handler = async (req: Request, meta?: RequestLogMeta): Promise<Response> =
 
     let routine;
     try {
-      routine = createRoutine(db, uid, body);
+      routine = createRoutine(db, auth.uid, {
+        ...body,
+        createdByName: auth.displayName ?? body.createdByName
+      });
     } catch (error) {
       if (error instanceof Error && error.message === 'routine_id_conflict') {
         return withCors(req, json({ error: 'routine_id_conflict' }, { status: 409 }), env.allowedOrigins);

@@ -66,6 +66,7 @@ export type RoutineOutput = {
   exercises: RoutineInput['exercises'];
   createdBy: string;
   createdByName?: string;
+  createdByAvatarUrl?: string;
   isPublic: boolean;
   timesUsed?: number;
   createdAt: number;
@@ -636,51 +637,77 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
       primary_muscle_group: string | null;
       times_used: number;
       created_by_name: string | null;
+      created_by_avatar_url: string | null;
       created_at_ms: number;
       updated_at_ms: number;
     }, [string, string, number]>(`
-      SELECT id, owner_uid, name, description, is_public, primary_muscle_group, times_used, created_by_name, created_at_ms, updated_at_ms
-      FROM routines
+      SELECT
+        r.id,
+        r.owner_uid,
+        r.name,
+        r.description,
+        r.is_public,
+        r.primary_muscle_group,
+        r.times_used,
+        COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name) AS created_by_name,
+        up.avatar_url AS created_by_avatar_url,
+        r.created_at_ms,
+        r.updated_at_ms
+      FROM routines r
+      LEFT JOIN user_profiles up ON up.uid = r.owner_uid
       WHERE
-        owner_uid = ?
+        r.owner_uid = ?
         OR (
-          is_public = 1
-          AND owner_uid <> ?
-          AND owner_uid <> 'system'
+          r.is_public = 1
+          AND r.owner_uid <> ?
+          AND r.owner_uid <> 'system'
           AND (
-            created_by_name IS NULL
-            OR LOWER(TRIM(REPLACE(created_by_name, CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
+            COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name) IS NULL
+            OR LOWER(TRIM(REPLACE(COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name), CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
           )
         )
-      ORDER BY created_at_ms DESC
+      ORDER BY r.created_at_ms DESC
       LIMIT ?
     `).all(uid, uid, limit)
     : db.query<{
       id: string;
       owner_uid: string;
       name: string;
-    description: string | null;
-    is_public: number;
-    primary_muscle_group: string | null;
-    times_used: number;
-    created_by_name: string | null;
-    created_at_ms: number;
-    updated_at_ms: number;
+      description: string | null;
+      is_public: number;
+      primary_muscle_group: string | null;
+      times_used: number;
+      created_by_name: string | null;
+      created_by_avatar_url: string | null;
+      created_at_ms: number;
+      updated_at_ms: number;
   }, [string, string]>(`
-    SELECT id, owner_uid, name, description, is_public, primary_muscle_group, times_used, created_by_name, created_at_ms, updated_at_ms
-    FROM routines
+    SELECT
+      r.id,
+      r.owner_uid,
+      r.name,
+      r.description,
+      r.is_public,
+      r.primary_muscle_group,
+      r.times_used,
+      COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name) AS created_by_name,
+      up.avatar_url AS created_by_avatar_url,
+      r.created_at_ms,
+      r.updated_at_ms
+    FROM routines r
+    LEFT JOIN user_profiles up ON up.uid = r.owner_uid
     WHERE
-      owner_uid = ?
+      r.owner_uid = ?
       OR (
-        is_public = 1
-        AND owner_uid <> ?
-        AND owner_uid <> 'system'
+        r.is_public = 1
+        AND r.owner_uid <> ?
+        AND r.owner_uid <> 'system'
         AND (
-          created_by_name IS NULL
-          OR LOWER(TRIM(REPLACE(created_by_name, CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
+          COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name) IS NULL
+          OR LOWER(TRIM(REPLACE(COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name), CHAR(160), ' '))) NOT IN ('sistema', 'usuario')
         )
       )
-    ORDER BY created_at_ms DESC
+    ORDER BY r.created_at_ms DESC
   `).all(uid, uid);
 
   if (routines.length === 0) {
@@ -745,6 +772,7 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
     exercises: exercisesByRoutine.get(routine.id) ?? [],
     createdBy: routine.owner_uid,
     createdByName: routine.created_by_name ?? undefined,
+    createdByAvatarUrl: routine.created_by_avatar_url ?? undefined,
     isPublic: routine.is_public === 1,
     timesUsed: routine.times_used,
     createdAt: routine.created_at_ms,
