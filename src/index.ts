@@ -36,6 +36,7 @@ import {
   markJobSent,
   rescheduleJob,
   tryClaimJob,
+  upsertUserProfile,
   upsertJob,
   upsertSubscription
 } from './db';
@@ -962,6 +963,14 @@ const requireAuth = async (req: Request, meta?: RequestLogMeta) => {
     jwksUrl: env.clerkJwksUrl,
     audience: env.clerkAudience
   });
+
+  upsertUserProfile(db, {
+    uid: auth.uid,
+    email: auth.email,
+    displayName: auth.displayName,
+    avatarUrl: auth.avatarUrl
+  });
+
   if (meta) {
     meta.uid = auth.uid;
   }

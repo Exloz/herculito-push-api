@@ -4,6 +4,8 @@ import { json } from './http';
 export interface AuthContext {
   uid: string;
   email?: string;
+  displayName?: string;
+  avatarUrl?: string;
 }
 
 const getBearerToken = (req: Request): string | null => {
@@ -27,6 +29,22 @@ const getJwks = (jwksUrl: string) => {
 const toStringClaim = (payload: JWTPayload, key: string): string | undefined => {
   const value = payload[key];
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+};
+
+const joinNameParts = (firstName?: string, lastName?: string): string | undefined => {
+  const first = firstName?.trim() ?? '';
+  const last = lastName?.trim() ?? '';
+  if (!first && !last) return undefined;
+  return `${first} ${last}`.trim();
+};
+
+const resolveDisplayName = (payload: JWTPayload): string | undefined => {
+  const firstName = toStringClaim(payload, 'first_name') ?? toStringClaim(payload, 'given_name');
+  const lastName = toStringClaim(payload, 'last_name') ?? toStringClaim(payload, 'family_name');
+
+  return toStringClaim(payload, 'name')
+    ?? toStringClaim(payload, 'full_name')
+    ?? joinNameParts(firstName, lastName);
 };
 
 export interface ClerkAuthOptions {
@@ -68,8 +86,10 @@ export const requireClerkAuth = async (req: Request, options: ClerkAuthOptions):
     }
 
     const email = toStringClaim(payload, 'email');
+    const displayName = resolveDisplayName(payload);
+    const avatarUrl = toStringClaim(payload, 'picture') ?? toStringClaim(payload, 'image_url');
 
-    return { uid, email };
+    return { uid, email, displayName, avatarUrl };
   } catch {
     throw json({ error: 'invalid_auth' }, { status: 401 });
   }

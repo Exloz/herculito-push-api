@@ -20,6 +20,13 @@ export interface JobRow {
   attempts: number;
 }
 
+export interface UserProfileRow {
+  uid: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  email: string | null;
+}
+
 export const createDb = (databasePath: string): Database => {
   const db = new Database(databasePath);
 
@@ -195,7 +202,17 @@ export const createDb = (databasePath: string): Database => {
       PRIMARY KEY (uid, id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      uid TEXT PRIMARY KEY,
+      display_name TEXT,
+      avatar_url TEXT,
+      email TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS workouts_uid_updated_idx ON workouts (uid, updated_at_ms DESC);
+    CREATE INDEX IF NOT EXISTS user_profiles_updated_idx ON user_profiles (updated_at_ms DESC);
   `);
 
   // Best-effort migration: older deployments had workouts(id PK) without uid.
@@ -288,6 +305,37 @@ export const deactivateSubscription = (db: Database, uid: string, deviceId: stri
     SET is_active = 0, updated_at_ms = ?
     WHERE uid = ? AND device_id = ?
   `).run(now, uid, deviceId);
+};
+
+export const upsertUserProfile = (db: Database, args: {
+  uid: string;
+  displayName?: string;
+  avatarUrl?: string;
+  email?: string;
+}): void => {
+  const now = Date.now();
+  const displayName = typeof args.displayName === 'string' && args.displayName.trim().length > 0
+    ? args.displayName.trim()
+    : null;
+  const avatarUrl = typeof args.avatarUrl === 'string' && args.avatarUrl.trim().length > 0
+    ? args.avatarUrl.trim()
+    : null;
+  const email = typeof args.email === 'string' && args.email.trim().length > 0
+    ? args.email.trim().toLowerCase()
+    : null;
+
+  db.query(`
+    INSERT INTO user_profiles (uid, display_name, avatar_url, email, created_at_ms, updated_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(uid) DO UPDATE SET
+      display_name = CASE
+        WHEN excluded.display_name IS NOT NULL AND LENGTH(TRIM(excluded.display_name)) > 0 THEN excluded.display_name
+        ELSE user_profiles.display_name
+      END,
+      avatar_url = COALESCE(excluded.avatar_url, user_profiles.avatar_url),
+      email = COALESCE(excluded.email, user_profiles.email),
+      updated_at_ms = excluded.updated_at_ms
+  `).run(args.uid, displayName, avatarUrl, email, now, now);
 };
 
 export const upsertJob = (db: Database, args: {

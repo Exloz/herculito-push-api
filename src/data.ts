@@ -97,6 +97,7 @@ export type WorkoutSessionOutput = {
 export type LeaderboardEntryOutput = {
   userId: string;
   name?: string;
+  avatarUrl?: string;
   totalWorkouts: number;
   position: number;
 };
@@ -198,6 +199,7 @@ const listLeaderboardByPeriod = (
     total_workouts: number;
     position: number;
     display_name: string | null;
+    avatar_url: string | null;
   }, [number]>(`
     WITH aggregated AS (
       SELECT
@@ -220,7 +222,9 @@ const listLeaderboardByPeriod = (
       ranked.uid,
       ranked.total_workouts,
       ranked.position,
-      (
+      COALESCE(
+        NULLIF(TRIM(up.display_name), ''),
+        (
         SELECT r.created_by_name
         FROM routines r
         WHERE
@@ -229,14 +233,18 @@ const listLeaderboardByPeriod = (
           AND LENGTH(TRIM(r.created_by_name)) > 0
         ORDER BY r.updated_at_ms DESC
         LIMIT 1
-      ) AS display_name
+        )
+      ) AS display_name,
+      up.avatar_url AS avatar_url
     FROM ranked
+    LEFT JOIN user_profiles up ON up.uid = ranked.uid
     ORDER BY ranked.position ASC
   `).all(periodStartMs);
 
   const fullLeaderboard = rows.map((row) => ({
     userId: row.uid,
     name: row.display_name ?? undefined,
+    avatarUrl: row.avatar_url ?? undefined,
     totalWorkouts: Number.isFinite(row.total_workouts) ? row.total_workouts : 0,
     position: row.position
   }));
