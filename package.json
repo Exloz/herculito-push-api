@@ -4,8 +4,8 @@
   "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts",
+    "dev": "bun --watch src/app/server.ts",
+    "start": "bun src/app/server.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "migrate:json": "bun scripts/migrate-from-json.ts",

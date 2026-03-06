@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import { json } from './http';
+import { json } from '../http/http';
 
 export interface AuthContext {
   uid: string;
