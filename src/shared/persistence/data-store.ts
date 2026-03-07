@@ -1190,7 +1190,18 @@ export const getAdminOverview = (db: Database): AdminOverviewOutput => {
     )
     SELECT
       u.user_id,
-      up.display_name,
+      COALESCE(
+        NULLIF(TRIM(up.display_name), ''),
+        (
+          SELECT r.created_by_name
+          FROM routines r
+          WHERE r.owner_uid = u.user_id
+            AND r.created_by_name IS NOT NULL
+            AND LENGTH(TRIM(r.created_by_name)) > 0
+          ORDER BY r.updated_at_ms DESC
+          LIMIT 1
+        )
+      ) AS display_name,
       up.email,
       up.avatar_url,
       COALESCE(rs.created_routines, 0) AS created_routines,
