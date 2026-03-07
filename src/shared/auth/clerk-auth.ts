@@ -3,6 +3,7 @@ import { json } from '../http/http';
 
 export interface AuthContext {
   uid: string;
+  clerkUserId: string;
   email?: string;
   displayName?: string;
   avatarUrl?: string;
@@ -75,13 +76,13 @@ export const requireClerkAuth = async (req: Request, options: ClerkAuthOptions):
 
     const { payload } = await jwtVerify(token, getJwks(options.jwksUrl), verifyOptions);
 
-    const legacyUid = toStringClaim(payload, 'legacy_uid') ?? toStringClaim(payload, 'external_id');
-    const uid = legacyUid
-      ?? toStringClaim(payload, 'clerk_user_id')
+    const resolvedClerkUserId = toStringClaim(payload, 'clerk_user_id')
       ?? toStringClaim(payload, 'user_id')
       ?? (typeof payload.sub === 'string' ? payload.sub : null);
+    const legacyUid = toStringClaim(payload, 'legacy_uid') ?? toStringClaim(payload, 'external_id');
+    const uid = legacyUid ?? resolvedClerkUserId;
 
-    if (!uid) {
+    if (!uid || !resolvedClerkUserId) {
       throw new Error('Missing uid');
     }
 
@@ -89,7 +90,7 @@ export const requireClerkAuth = async (req: Request, options: ClerkAuthOptions):
     const displayName = resolveDisplayName(payload);
     const avatarUrl = toStringClaim(payload, 'picture') ?? toStringClaim(payload, 'image_url');
 
-    return { uid, email, displayName, avatarUrl };
+    return { uid, clerkUserId: resolvedClerkUserId, email, displayName, avatarUrl };
   } catch {
     throw json({ error: 'invalid_auth' }, { status: 401 });
   }

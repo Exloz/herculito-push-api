@@ -113,6 +113,60 @@ export type CompetitiveLeaderboardOutput = {
   month: LeaderboardPeriodOutput;
 };
 
+export type AdminSummaryOutput = {
+  totalUsers: number;
+  totalRoutines: number;
+  totalCompletedSessions: number;
+  averageDurationMin: number;
+};
+
+export type AdminUserOverview = {
+  userId: string;
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
+  createdRoutines: number;
+  completedSessions: number;
+  lastActivityAt?: number;
+};
+
+export type AdminRoutineExerciseOverview = {
+  exerciseId: string;
+  name: string;
+  sets: number;
+  reps: number;
+  restTime?: number;
+};
+
+export type AdminRoutineOverview = {
+  routineId: string;
+  name: string;
+  createdBy: string;
+  createdByName?: string;
+  timesUsed: number;
+  lastCompletedAt?: number;
+  exercises: AdminRoutineExerciseOverview[];
+};
+
+export type AdminSessionOverview = {
+  sessionId: string;
+  userId: string;
+  userName?: string;
+  routineId?: string;
+  routineName: string;
+  startedAt: number;
+  completedAt?: number;
+  totalDuration?: number;
+  exercises: unknown[];
+};
+
+export type AdminOverviewOutput = {
+  summary: AdminSummaryOutput;
+  users: AdminUserOverview[];
+  routines: AdminRoutineOverview[];
+  sessions: AdminSessionOverview[];
+};
+
 export type ExerciseLogInput = {
   exerciseId: string;
   date: string;
@@ -1077,6 +1131,201 @@ export const getCompetitiveLeaderboard = (
   return {
     week: listLeaderboardByPeriod(db, requesterUid, weekStartMs, safeLimit),
     month: listLeaderboardByPeriod(db, requesterUid, monthStartMs, safeLimit)
+  };
+};
+
+export const getAdminOverview = (db: Database): AdminOverviewOutput => {
+  const summaryRow = db.query<{
+    total_users: number;
+    total_routines: number;
+    total_completed_sessions: number;
+    average_duration_min: number | null;
+  }, []>(`
+    SELECT
+      (
+        SELECT COUNT(1)
+        FROM (
+          SELECT uid FROM user_profiles WHERE uid <> 'system'
+          UNION
+          SELECT owner_uid AS uid FROM routines WHERE owner_uid <> 'system'
+          UNION
+          SELECT uid FROM workout_sessions WHERE uid <> 'system'
+        )
+      ) AS total_users,
+      (SELECT COUNT(1) FROM routines) AS total_routines,
+      (SELECT COUNT(1) FROM workout_sessions WHERE completed_at_ms IS NOT NULL) AS total_completed_sessions,
+      (SELECT AVG(total_duration_min) FROM workout_sessions WHERE completed_at_ms IS NOT NULL AND total_duration_min IS NOT NULL) AS average_duration_min
+  `).get();
+
+  const users = db.query<{
+    user_id: string;
+    display_name: string | null;
+    email: string | null;
+    avatar_url: string | null;
+    created_routines: number;
+    completed_sessions: number;
+    last_activity_at: number | null;
+  }, []>(`
+    WITH user_ids AS (
+      SELECT uid AS user_id FROM user_profiles WHERE uid <> 'system'
+      UNION
+      SELECT owner_uid AS user_id FROM routines WHERE owner_uid <> 'system'
+      UNION
+      SELECT uid AS user_id FROM workout_sessions WHERE uid <> 'system'
+    ),
+    routine_stats AS (
+      SELECT owner_uid AS user_id, COUNT(1) AS created_routines
+      FROM routines
+      WHERE owner_uid <> 'system'
+      GROUP BY owner_uid
+    ),
+    session_stats AS (
+      SELECT
+        uid AS user_id,
+        COUNT(CASE WHEN completed_at_ms IS NOT NULL THEN 1 END) AS completed_sessions,
+        MAX(COALESCE(completed_at_ms, started_at_ms)) AS last_activity_at
+      FROM workout_sessions
+      WHERE uid <> 'system'
+      GROUP BY uid
+    )
+    SELECT
+      u.user_id,
+      up.display_name,
+      up.email,
+      up.avatar_url,
+      COALESCE(rs.created_routines, 0) AS created_routines,
+      COALESCE(ss.completed_sessions, 0) AS completed_sessions,
+      ss.last_activity_at
+    FROM user_ids u
+    LEFT JOIN user_profiles up ON up.uid = u.user_id
+    LEFT JOIN routine_stats rs ON rs.user_id = u.user_id
+    LEFT JOIN session_stats ss ON ss.user_id = u.user_id
+    ORDER BY
+      COALESCE(ss.last_activity_at, 0) DESC,
+      COALESCE(up.display_name, up.email, u.user_id) ASC
+  `).all();
+
+  const routines = db.query<{
+    routine_id: string;
+    name: string;
+    created_by: string;
+    created_by_name: string | null;
+    times_used: number;
+    last_completed_at: number | null;
+  }, []>(`
+    SELECT
+      r.id AS routine_id,
+      r.name,
+      r.owner_uid AS created_by,
+      COALESCE(NULLIF(TRIM(up.display_name), ''), r.created_by_name) AS created_by_name,
+      r.times_used,
+      MAX(ws.completed_at_ms) AS last_completed_at
+    FROM routines r
+    LEFT JOIN user_profiles up ON up.uid = r.owner_uid
+    LEFT JOIN workout_sessions ws ON ws.routine_id = r.id AND ws.completed_at_ms IS NOT NULL
+    GROUP BY r.id
+    ORDER BY r.created_at_ms DESC
+  `).all();
+
+  const routineExercises = db.query<{
+    routine_id: string;
+    exercise_id: string;
+    display_name: string | null;
+    sets: number;
+    reps: number;
+    rest_time_s: number | null;
+    exercise_name: string | null;
+  }, []>(`
+    SELECT
+      re.routine_id,
+      re.exercise_id,
+      re.display_name,
+      re.sets,
+      re.reps,
+      re.rest_time_s,
+      e.name AS exercise_name
+    FROM routine_exercises re
+    LEFT JOIN exercises e ON e.id = re.exercise_id
+    ORDER BY re.routine_id ASC, re.position ASC
+  `).all();
+
+  const exercisesByRoutine = new Map<string, AdminRoutineExerciseOverview[]>();
+  routineExercises.forEach((exercise) => {
+    const items = exercisesByRoutine.get(exercise.routine_id) ?? [];
+    items.push({
+      exerciseId: exercise.exercise_id,
+      name: exercise.display_name ?? exercise.exercise_name ?? exercise.exercise_id,
+      sets: exercise.sets,
+      reps: exercise.reps,
+      restTime: exercise.rest_time_s ?? undefined
+    });
+    exercisesByRoutine.set(exercise.routine_id, items);
+  });
+
+  const sessions = db.query<{
+    session_id: string;
+    user_id: string;
+    user_name: string | null;
+    routine_id: string | null;
+    routine_name: string;
+    started_at: number;
+    completed_at: number | null;
+    total_duration: number | null;
+    exercises_json: string | null;
+  }, []>(`
+    SELECT
+      ws.id AS session_id,
+      ws.uid AS user_id,
+      COALESCE(NULLIF(TRIM(up.display_name), ''), up.email, ws.uid) AS user_name,
+      ws.routine_id,
+      ws.routine_name_snapshot AS routine_name,
+      ws.started_at_ms AS started_at,
+      ws.completed_at_ms AS completed_at,
+      ws.total_duration_min AS total_duration,
+      ws.exercises_json
+    FROM workout_sessions ws
+    LEFT JOIN user_profiles up ON up.uid = ws.uid
+    WHERE ws.completed_at_ms IS NOT NULL
+    ORDER BY ws.completed_at_ms DESC
+    LIMIT 500
+  `).all();
+
+  return {
+    summary: {
+      totalUsers: summaryRow?.total_users ?? 0,
+      totalRoutines: summaryRow?.total_routines ?? 0,
+      totalCompletedSessions: summaryRow?.total_completed_sessions ?? 0,
+      averageDurationMin: Math.round(summaryRow?.average_duration_min ?? 0)
+    },
+    users: users.map((user) => ({
+      userId: user.user_id,
+      name: user.display_name ?? undefined,
+      email: user.email ?? undefined,
+      avatarUrl: user.avatar_url ?? undefined,
+      createdRoutines: user.created_routines,
+      completedSessions: user.completed_sessions,
+      lastActivityAt: user.last_activity_at ?? undefined
+    })),
+    routines: routines.map((routine) => ({
+      routineId: routine.routine_id,
+      name: routine.name,
+      createdBy: routine.created_by,
+      createdByName: routine.created_by_name ?? undefined,
+      timesUsed: routine.times_used,
+      lastCompletedAt: routine.last_completed_at ?? undefined,
+      exercises: exercisesByRoutine.get(routine.routine_id) ?? []
+    })),
+    sessions: sessions.map((session) => ({
+      sessionId: session.session_id,
+      userId: session.user_id,
+      userName: session.user_name ?? undefined,
+      routineId: session.routine_id ?? undefined,
+      routineName: session.routine_name,
+      startedAt: session.started_at,
+      completedAt: session.completed_at ?? undefined,
+      totalDuration: session.total_duration ?? undefined,
+      exercises: safeJsonParse<unknown[]>(session.exercises_json) ?? []
+    }))
   };
 };
 
