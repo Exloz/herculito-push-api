@@ -27,6 +27,34 @@ const getJwks = (jwksUrl: string) => {
   return created;
 };
 
+const VERIFIED_TOKEN_CACHE_TTL_MS = 60 * 1000;
+
+type CachedAuthContext = {
+  auth: AuthContext;
+  expiresAt: number;
+};
+
+const verifiedTokenCache = new Map<string, CachedAuthContext>();
+
+const getCachedAuth = (token: string): AuthContext | null => {
+  const cached = verifiedTokenCache.get(token);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    verifiedTokenCache.delete(token);
+    return null;
+  }
+  return cached.auth;
+};
+
+const cacheAuth = (token: string, payload: JWTPayload, auth: AuthContext) => {
+  const expSeconds = typeof payload.exp === 'number' ? payload.exp : undefined;
+  const expMs = expSeconds ? expSeconds * 1000 : Date.now() + VERIFIED_TOKEN_CACHE_TTL_MS;
+  verifiedTokenCache.set(token, {
+    auth,
+    expiresAt: Math.min(expMs, Date.now() + VERIFIED_TOKEN_CACHE_TTL_MS)
+  });
+};
+
 const toStringClaim = (payload: JWTPayload, key: string): string | undefined => {
   const value = payload[key];
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -60,6 +88,11 @@ export const requireClerkAuth = async (req: Request, options: ClerkAuthOptions):
     throw json({ error: 'missing_auth' }, { status: 401 });
   }
 
+  const cachedAuth = getCachedAuth(token);
+  if (cachedAuth) {
+    return cachedAuth;
+  }
+
   try {
     const verifyOptions: {
       issuer: string;
@@ -90,7 +123,9 @@ export const requireClerkAuth = async (req: Request, options: ClerkAuthOptions):
     const displayName = resolveDisplayName(payload);
     const avatarUrl = toStringClaim(payload, 'picture') ?? toStringClaim(payload, 'image_url');
 
-    return { uid, clerkUserId: resolvedClerkUserId, email, displayName, avatarUrl };
+    const auth = { uid, clerkUserId: resolvedClerkUserId, email, displayName, avatarUrl };
+    cacheAuth(token, payload, auth);
+    return auth;
   } catch {
     throw json({ error: 'invalid_auth' }, { status: 401 });
   }
