@@ -167,6 +167,78 @@ export type AdminOverviewOutput = {
   sessions: AdminSessionOverview[];
 };
 
+export type DashboardSummaryOutput = {
+  totalWorkouts: number;
+  thisWeekWorkouts: number;
+  thisMonthWorkouts: number;
+  currentStreak: number;
+  longestStreak: number;
+  averageDurationMin: number;
+};
+
+export type DashboardRecentSessionOutput = {
+  id: string;
+  routineId?: string;
+  routineName: string;
+  primaryMuscleGroup?: string;
+  completedAt: number;
+  totalDuration?: number;
+};
+
+export type DashboardCalendarWorkoutOutput = {
+  sessionId: string;
+  routineName: string;
+  muscleGroup: string;
+};
+
+export type DashboardCalendarDayOutput = {
+  date: string;
+  workouts: DashboardCalendarWorkoutOutput[];
+};
+
+export type DashboardRoutineOutput = RoutineOutput & {
+  exerciseCount: number;
+};
+
+export type DashboardCompetitionOutput = {
+  weekLeader: LeaderboardEntryOutput | null;
+  monthLeader: LeaderboardEntryOutput | null;
+  userWeekRank: LeaderboardEntryOutput | null;
+  userMonthRank: LeaderboardEntryOutput | null;
+};
+
+export type DashboardExerciseProgressPointOutput = {
+  timestamp: number;
+  bestWeight: number;
+  completedSets: number;
+  totalWeight: number;
+};
+
+export type DashboardExerciseProgressTrend = 'up' | 'down' | 'flat' | 'neutral';
+
+export type DashboardExerciseProgressSummaryOutput = {
+  exerciseId: string;
+  exerciseName: string;
+  points: DashboardExerciseProgressPointOutput[];
+  totalSessions: number;
+  personalRecord: number;
+  lastWeight: number;
+  previousWeight: number | null;
+  trend: DashboardExerciseProgressTrend;
+  lastCompletedAt: number;
+  weeklyVolumeKg: number;
+};
+
+export type DashboardOutput = {
+  summary: DashboardSummaryOutput;
+  recentSessions: DashboardRecentSessionOutput[];
+  calendar: DashboardCalendarDayOutput[];
+  dashboardRoutines: DashboardRoutineOutput[];
+  competition: DashboardCompetitionOutput;
+  lastWeightsByRoutine: Record<string, Record<string, number[]>>;
+  exerciseProgress: DashboardExerciseProgressSummaryOutput[];
+};
+
 export type ExerciseLogInput = {
   exerciseId: string;
   date: string;
@@ -227,6 +299,10 @@ const makeCustomExerciseId = (): string => {
 
 const ROUTINE_EXERCISE_QUERY_CHUNK_SIZE = 400;
 const SESSION_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const DASHBOARD_CALENDAR_SESSION_LIMIT = 365;
+const DASHBOARD_PROGRESS_SESSION_LIMIT = 200;
+const APP_TIME_ZONE = 'America/Bogota';
+const FALLBACK_OFFSET_HOURS = -5;
 
 const getStartOfWeekMs = (referenceDate = new Date()): number => {
   const startOfWeek = new Date(referenceDate);
@@ -241,6 +317,137 @@ const getStartOfMonthMs = (referenceDate = new Date()): number => {
   const startOfMonth = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1);
   startOfMonth.setHours(0, 0, 0, 0);
   return startOfMonth.getTime();
+};
+
+const pad2 = (value: number): string => String(value).padStart(2, '0');
+
+const dateFromDateKey = (dateString: string): Date => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+};
+
+const getDateKeyInAppTimeZone = (value: Date | number): string => {
+  const date = value instanceof Date ? value : new Date(value);
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: APP_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(date);
+
+    const year = parts.find((part) => part.type === 'year')?.value;
+    const month = parts.find((part) => part.type === 'month')?.value;
+    const day = parts.find((part) => part.type === 'day')?.value;
+
+    if (!year || !month || !day) {
+      throw new Error('invalid_date_parts');
+    }
+
+    return `${year}-${month}-${day}`;
+  } catch {
+    const shifted = new Date(date.getTime() + FALLBACK_OFFSET_HOURS * 3600000);
+    return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}`;
+  }
+};
+
+const addDaysToDateKey = (dateKey: string, days: number): string => {
+  const date = dateFromDateKey(dateKey);
+  date.setUTCDate(date.getUTCDate() + days);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+};
+
+const getStartOfWeekDateKey = (dateKey: string): string => {
+  const weekday = dateFromDateKey(dateKey).getUTCDay();
+  const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
+  return addDaysToDateKey(dateKey, -daysSinceMonday);
+};
+
+const getStartOfMonthDateKey = (dateKey: string): string => {
+  return `${dateKey.slice(0, 7)}-01`;
+};
+
+const getCompletedSessionDayKeys = (timestamps: number[]): string[] => {
+  const uniqueDays = new Set<string>();
+  timestamps.forEach((timestamp) => {
+    uniqueDays.add(getDateKeyInAppTimeZone(timestamp));
+  });
+
+  return Array.from(uniqueDays).sort();
+};
+
+const calculateCurrentWorkoutStreak = (completedDayKeys: string[], referenceDateKey: string): number => {
+  if (completedDayKeys.length === 0) return 0;
+
+  const completedDaysSet = new Set(completedDayKeys);
+  const yesterdayKey = addDaysToDateKey(referenceDateKey, -1);
+
+  let anchorDateKey: string | null = null;
+  if (completedDaysSet.has(referenceDateKey)) {
+    anchorDateKey = referenceDateKey;
+  } else if (completedDaysSet.has(yesterdayKey)) {
+    anchorDateKey = yesterdayKey;
+  } else {
+    return 0;
+  }
+
+  let streak = 0;
+  let cursor = anchorDateKey;
+  while (completedDaysSet.has(cursor)) {
+    streak += 1;
+    cursor = addDaysToDateKey(cursor, -1);
+  }
+
+  return streak;
+};
+
+const calculateLongestWorkoutStreak = (completedDayKeys: string[]): number => {
+  if (completedDayKeys.length === 0) return 0;
+
+  let longestStreak = 1;
+  let currentStreak = 1;
+
+  for (let index = 1; index < completedDayKeys.length; index += 1) {
+    const expectedNextDay = addDaysToDateKey(completedDayKeys[index - 1], 1);
+    if (completedDayKeys[index] === expectedNextDay) {
+      currentStreak += 1;
+      continue;
+    }
+
+    longestStreak = Math.max(longestStreak, currentStreak);
+    currentStreak = 1;
+  }
+
+  return Math.max(longestStreak, currentStreak);
+};
+
+const roundWeight = (value: number): number => {
+  return Math.round(value * 10) / 10;
+};
+
+const isUuidLike = (value: string): boolean => {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+};
+
+const isOpaqueIdentifier = (value: string): boolean => {
+  return /^[0-9a-z:_-]{20,}$/i.test(value);
+};
+
+const isUnresolvableExerciseId = (exerciseId: string): boolean => {
+  const baseId = exerciseId.replace(/^custom:/, '').trim();
+  return isUuidLike(baseId) || isOpaqueIdentifier(baseId);
+};
+
+const fallbackExerciseName = (exerciseId: string): string => {
+  const baseId = exerciseId.replace(/^custom:/, '').trim();
+  if (isUuidLike(baseId) || isOpaqueIdentifier(baseId)) {
+    return 'Ejercicio personalizado';
+  }
+
+  const normalized = baseId.replace(/[_-]+/g, ' ').trim();
+  if (normalized.length === 0) return 'Ejercicio';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 };
 
 const listLeaderboardByPeriod = (
@@ -1140,6 +1347,268 @@ export const getCompetitiveLeaderboard = (
   return {
     week: listLeaderboardByPeriod(db, requesterUid, weekStartMs, safeLimit),
     month: listLeaderboardByPeriod(db, requesterUid, monthStartMs, safeLimit)
+  };
+};
+
+export const getDashboardData = (db: Database, uid: string): DashboardOutput => {
+  const completedSessions = db.query<{
+    id: string;
+    routine_id: string | null;
+    routine_name_snapshot: string;
+    primary_muscle_group: string | null;
+    completed_at_ms: number;
+    total_duration_min: number | null;
+  }, [string]>(`
+    SELECT
+      id,
+      routine_id,
+      routine_name_snapshot,
+      primary_muscle_group,
+      completed_at_ms,
+      total_duration_min
+    FROM workout_sessions
+    WHERE uid = ?
+      AND completed_at_ms IS NOT NULL
+    ORDER BY completed_at_ms DESC
+  `).all(uid);
+
+  const currentDateKey = getDateKeyInAppTimeZone(Date.now());
+  const startOfWeekDateKey = getStartOfWeekDateKey(currentDateKey);
+  const startOfMonthDateKey = getStartOfMonthDateKey(currentDateKey);
+  const completedTimestamps = completedSessions.map((session) => session.completed_at_ms);
+  const completedDayKeys = getCompletedSessionDayKeys(completedTimestamps);
+  const durations = completedSessions
+    .map((session) => session.total_duration_min)
+    .filter((duration): duration is number => typeof duration === 'number' && Number.isFinite(duration));
+
+  const summary: DashboardSummaryOutput = {
+    totalWorkouts: completedSessions.length,
+    thisWeekWorkouts: completedTimestamps.filter((timestamp) => getDateKeyInAppTimeZone(timestamp) >= startOfWeekDateKey).length,
+    thisMonthWorkouts: completedTimestamps.filter((timestamp) => getDateKeyInAppTimeZone(timestamp) >= startOfMonthDateKey).length,
+    currentStreak: calculateCurrentWorkoutStreak(completedDayKeys, currentDateKey),
+    longestStreak: calculateLongestWorkoutStreak(completedDayKeys),
+    averageDurationMin: durations.length > 0
+      ? Math.round(durations.reduce((total, duration) => total + duration, 0) / durations.length)
+      : 0
+  };
+
+  const recentSessions: DashboardRecentSessionOutput[] = completedSessions.slice(0, 5).map((session) => ({
+    id: session.id,
+    routineId: session.routine_id ?? undefined,
+    routineName: session.routine_name_snapshot,
+    primaryMuscleGroup: session.primary_muscle_group ?? undefined,
+    completedAt: session.completed_at_ms,
+    totalDuration: session.total_duration_min ?? undefined
+  }));
+
+  const calendarMap = new Map<string, DashboardCalendarWorkoutOutput[]>();
+  completedSessions.slice(0, DASHBOARD_CALENDAR_SESSION_LIMIT).forEach((session) => {
+    const dateKey = getDateKeyInAppTimeZone(session.completed_at_ms);
+    const workouts = calendarMap.get(dateKey) ?? [];
+    workouts.push({
+      sessionId: session.id,
+      routineName: session.routine_name_snapshot,
+      muscleGroup: session.primary_muscle_group ?? 'fullbody'
+    });
+    calendarMap.set(dateKey, workouts);
+  });
+
+  const calendar = Array.from(calendarMap.entries())
+    .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
+    .map(([date, workouts]) => ({ date, workouts }));
+
+  const hiddenRoutineIds = new Set(listHiddenPublicRoutineIds(db, uid));
+  const dashboardRoutines = listRoutines(db, uid, { includeVideos: false })
+    .filter((routine) => {
+      const owner = routine.createdBy;
+      const isCommunityRoutine = routine.isPublic && owner !== uid && owner !== 'system';
+      if (!isCommunityRoutine) return true;
+      return !hiddenRoutineIds.has(routine.id);
+    })
+    .map((routine) => ({
+      ...routine,
+      exerciseCount: routine.exercises.length
+    }));
+
+  const exerciseNames = new Map<string, string>();
+  dashboardRoutines.forEach((routine) => {
+    routine.exercises.forEach((exercise) => {
+      if (!exerciseNames.has(exercise.id) && exercise.name.trim().length > 0) {
+        exerciseNames.set(exercise.id, exercise.name.trim());
+      }
+    });
+  });
+
+  const progressSessions = db.query<{
+    routine_id: string | null;
+    completed_at_ms: number;
+    exercises_json: string | null;
+  }, [string, number]>(`
+    SELECT routine_id, completed_at_ms, exercises_json
+    FROM workout_sessions
+    WHERE uid = ?
+      AND completed_at_ms IS NOT NULL
+      AND exercises_json IS NOT NULL
+    ORDER BY completed_at_ms DESC
+    LIMIT ?
+  `).all(uid, DASHBOARD_PROGRESS_SESSION_LIMIT);
+
+  const pointsByExerciseId = new Map<string, DashboardExerciseProgressPointOutput[]>();
+  const lastWeightsByRoutine: Record<string, Record<string, number[]>> = {};
+  const unresolvedExerciseIds = new Set<string>();
+
+  progressSessions.forEach((session) => {
+    const exerciseLogs = safeJsonParse<Array<{
+      exerciseId?: string;
+      sets?: Array<{ completed?: boolean; weight?: number }>;
+    }>>(session.exercises_json);
+
+    if (!exerciseLogs || exerciseLogs.length === 0) {
+      return;
+    }
+
+    const routineWeights: Record<string, number[]> = {};
+
+    exerciseLogs.forEach((log) => {
+      if (!log || typeof log.exerciseId !== 'string' || log.exerciseId.trim().length === 0) {
+        return;
+      }
+
+      const completedSets = Array.isArray(log.sets)
+        ? log.sets.filter((set) => set?.completed === true && typeof set.weight === 'number' && Number.isFinite(set.weight) && set.weight > 0)
+        : [];
+
+      if (completedSets.length === 0) {
+        return;
+      }
+
+      const weights = completedSets.map((set) => roundWeight(set.weight ?? 0)).filter((weight) => weight > 0);
+      if (weights.length === 0) {
+        return;
+      }
+
+      if (session.routine_id && !lastWeightsByRoutine[session.routine_id]) {
+        routineWeights[log.exerciseId] = weights;
+      }
+
+      if (!exerciseNames.has(log.exerciseId)) {
+        unresolvedExerciseIds.add(log.exerciseId);
+      }
+
+      const bestWeight = roundWeight(weights.reduce((maxWeight, weight) => Math.max(maxWeight, weight), 0));
+      const totalWeight = roundWeight(weights.reduce((sum, weight) => sum + weight, 0));
+      const points = pointsByExerciseId.get(log.exerciseId) ?? [];
+
+      points.push({
+        timestamp: session.completed_at_ms,
+        bestWeight,
+        completedSets: weights.length,
+        totalWeight
+      });
+      pointsByExerciseId.set(log.exerciseId, points);
+    });
+
+    if (session.routine_id && !lastWeightsByRoutine[session.routine_id] && Object.keys(routineWeights).length > 0) {
+      lastWeightsByRoutine[session.routine_id] = routineWeights;
+    }
+  });
+
+  if (unresolvedExerciseIds.size > 0) {
+    const unresolvedIds = Array.from(unresolvedExerciseIds);
+    for (let index = 0; index < unresolvedIds.length; index += ROUTINE_EXERCISE_QUERY_CHUNK_SIZE) {
+      const batchIds = unresolvedIds.slice(index, index + ROUTINE_EXERCISE_QUERY_CHUNK_SIZE);
+      if (batchIds.length === 0) continue;
+
+      const placeholders = batchIds.map(() => '?').join(', ');
+      const rows = db.query<{
+        id: string;
+        name: string;
+      }, string[]>(`
+        SELECT id, name
+        FROM exercises
+        WHERE id IN (${placeholders})
+      `).all(...batchIds);
+
+      rows.forEach((row) => {
+        if (!exerciseNames.has(row.id) && row.name.trim().length > 0) {
+          exerciseNames.set(row.id, row.name.trim());
+        }
+      });
+    }
+  }
+
+  const weekStartDateKey = addDaysToDateKey(currentDateKey, -6);
+  const exerciseProgress: DashboardExerciseProgressSummaryOutput[] = [];
+
+  pointsByExerciseId.forEach((rawPoints, exerciseId) => {
+    const resolvedExerciseName = exerciseNames.get(exerciseId);
+    if (!resolvedExerciseName && isUnresolvableExerciseId(exerciseId)) {
+      return;
+    }
+
+    const points = [...rawPoints].sort((left, right) => left.timestamp - right.timestamp);
+    if (points.length === 0) {
+      return;
+    }
+
+    const lastPoint = points[points.length - 1];
+    const previousPoint = points.length > 1 ? points[points.length - 2] : null;
+    const personalRecord = roundWeight(
+      points.reduce((maxWeight, point) => Math.max(maxWeight, point.bestWeight), 0)
+    );
+    const weeklyVolumeKg = roundWeight(
+      points
+        .filter((point) => getDateKeyInAppTimeZone(point.timestamp) >= weekStartDateKey)
+        .reduce((sumWeight, point) => sumWeight + point.totalWeight, 0)
+    );
+    const previousWeight = previousPoint ? previousPoint.bestWeight : null;
+
+    let trend: DashboardExerciseProgressTrend = 'neutral';
+    if (previousWeight !== null) {
+      if (lastPoint.bestWeight > previousWeight) {
+        trend = 'up';
+      } else if (lastPoint.bestWeight < previousWeight) {
+        trend = 'down';
+      } else {
+        trend = 'flat';
+      }
+    }
+
+    exerciseProgress.push({
+      exerciseId,
+      exerciseName: resolvedExerciseName ?? fallbackExerciseName(exerciseId),
+      points,
+      totalSessions: points.length,
+      personalRecord,
+      lastWeight: lastPoint.bestWeight,
+      previousWeight,
+      trend,
+      lastCompletedAt: lastPoint.timestamp,
+      weeklyVolumeKg
+    });
+  });
+
+  exerciseProgress.sort((left, right) => {
+    const timeDiff = right.lastCompletedAt - left.lastCompletedAt;
+    if (timeDiff !== 0) return timeDiff;
+    return right.totalSessions - left.totalSessions;
+  });
+
+  const leaderboard = getCompetitiveLeaderboard(db, uid, 25);
+
+  return {
+    summary,
+    recentSessions,
+    calendar,
+    dashboardRoutines,
+    competition: {
+      weekLeader: leaderboard.week.top[0] ?? null,
+      monthLeader: leaderboard.month.top[0] ?? null,
+      userWeekRank: leaderboard.week.currentUser,
+      userMonthRank: leaderboard.month.currentUser
+    },
+    lastWeightsByRoutine,
+    exerciseProgress
   };
 };
 

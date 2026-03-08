@@ -8,6 +8,7 @@ import { handlePushRoutes } from '../modules/push/routes';
 import { handleRestRoutes } from '../modules/rest/routes';
 import { handleProfileRoutes } from '../modules/profile/routes';
 import { handleExerciseRoutes } from '../modules/exercises/routes';
+import { handleDashboardRoutes } from '../modules/dashboard/routes';
 import { handleRoutineRoutes } from '../modules/routines/routes';
 import { handleSessionRoutes } from '../modules/sessions/routes';
 import { handleWorkoutRoutes } from '../modules/workouts/routes';
@@ -34,6 +35,7 @@ const routeHandlers: AppRouteHandler[] = [
   handleRestRoutes,
   handleProfileRoutes,
   handleExerciseRoutes,
+  handleDashboardRoutes,
   handleRoutineRoutes,
   handleSessionRoutes,
   handleAdminRoutes,
