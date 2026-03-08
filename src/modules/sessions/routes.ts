@@ -46,7 +46,9 @@ export const handleSessionRoutes: AppRouteHandler = async (req, url, context, me
   if (req.method === 'GET' && url.pathname === '/v1/data/sessions') {
     const { uid } = await context.requireAuth(req, meta);
     const limit = isValidLimitParam(url.searchParams.get('limit'), 500) ?? 500;
-    const sessions = listSessions(context.db, uid, limit);
+    const includeExercises = url.searchParams.get('includeExercises') === '1';
+    const completedOnly = url.searchParams.get('completedOnly') === '1';
+    const sessions = listSessions(context.db, uid, { limit, includeExercises, completedOnly });
     return withCors(req, json({ sessions }), context.env.allowedOrigins);
   }
 

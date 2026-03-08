@@ -680,7 +680,9 @@ export const incrementExerciseUsage = (db: Database, uid: string, exerciseId: st
   `).run(exerciseId, uid);
 };
 
-export const listRoutines = (db: Database, uid: string, limit?: number): RoutineOutput[] => {
+export const listRoutines = (db: Database, uid: string, options?: { limit?: number; includeVideos?: boolean }): RoutineOutput[] => {
+  const limit = options?.limit;
+  const includeVideos = options?.includeVideos === true;
   const routines = limit
     ? db.query<{
       id: string;
@@ -777,7 +779,7 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
     reps: number;
     rest_time_s: number | null;
     name: string | null;
-    video_json: string | null;
+    video_json?: string | null;
   }> = [];
 
   for (let index = 0; index < routineIds.length; index += ROUTINE_EXERCISE_QUERY_CHUNK_SIZE) {
@@ -792,9 +794,9 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
       reps: number;
       rest_time_s: number | null;
       name: string | null;
-      video_json: string | null;
+      video_json?: string | null;
     }, string[]>(`
-      SELECT re.routine_id, re.exercise_id, re.display_name, re.sets, re.reps, re.rest_time_s, e.name, e.video_json
+      SELECT re.routine_id, re.exercise_id, re.display_name, re.sets, re.reps, re.rest_time_s, e.name${includeVideos ? ', e.video_json' : ''}
       FROM routine_exercises re
       LEFT JOIN exercises e ON e.id = re.exercise_id
       WHERE re.routine_id IN (${placeholders})
@@ -806,7 +808,6 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
   const exercisesByRoutine = new Map<string, RoutineInput['exercises']>();
   exercises.forEach((exercise) => {
     const list = exercisesByRoutine.get(exercise.routine_id) ?? [];
-    const video = safeJsonParse<ExerciseVideo>(exercise.video_json);
     const name = exercise.display_name ?? exercise.name ?? exercise.exercise_id;
     list.push({
       id: exercise.exercise_id,
@@ -814,7 +815,7 @@ export const listRoutines = (db: Database, uid: string, limit?: number): Routine
       sets: exercise.sets,
       reps: exercise.reps,
       restTime: exercise.rest_time_s ?? undefined,
-      video
+      video: includeVideos ? safeJsonParse<ExerciseVideo>(exercise.video_json ?? null) : undefined
     });
     exercisesByRoutine.set(exercise.routine_id, list);
   });
@@ -1084,7 +1085,15 @@ export const setRoutineVisibility = (db: Database, uid: string, input: RoutineVi
   return true;
 };
 
-export const listSessions = (db: Database, uid: string, limit = 500): WorkoutSessionOutput[] => {
+export const listSessions = (
+  db: Database,
+  uid: string,
+  options?: { limit?: number; includeExercises?: boolean; completedOnly?: boolean }
+): WorkoutSessionOutput[] => {
+  const limit = options?.limit ?? 500;
+  const includeExercises = options?.includeExercises === true;
+  const completedOnly = options?.completedOnly === true;
+
   const rows = db.query<{
     id: string;
     routine_id: string | null;
@@ -1093,17 +1102,17 @@ export const listSessions = (db: Database, uid: string, limit = 500): WorkoutSes
     started_at_ms: number;
     completed_at_ms: number | null;
     total_duration_min: number | null;
-    exercises_json: string | null;
+    exercises_json?: string | null;
   }, [string, number]>(`
-    SELECT id, routine_id, routine_name_snapshot, primary_muscle_group, started_at_ms, completed_at_ms, total_duration_min, exercises_json
+    SELECT id, routine_id, routine_name_snapshot, primary_muscle_group, started_at_ms, completed_at_ms, total_duration_min${includeExercises ? ', exercises_json' : ''}
     FROM workout_sessions
     WHERE uid = ?
+      ${completedOnly ? 'AND completed_at_ms IS NOT NULL' : ''}
     ORDER BY started_at_ms DESC
     LIMIT ?
   `).all(uid, limit);
 
   return rows.map((row) => {
-    const exercises = safeJsonParse<unknown[]>(row.exercises_json) ?? [];
     return {
       id: row.id,
       routineId: row.routine_id ?? undefined,
@@ -1113,7 +1122,7 @@ export const listSessions = (db: Database, uid: string, limit = 500): WorkoutSes
       startedAt: row.started_at_ms,
       completedAt: row.completed_at_ms ?? undefined,
       totalDuration: row.total_duration_min ?? undefined,
-      exercises
+      exercises: includeExercises ? (safeJsonParse<unknown[]>(row.exercises_json ?? null) ?? []) : []
     };
   });
 };

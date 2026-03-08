@@ -41,7 +41,8 @@ export const handleRoutineRoutes: AppRouteHandler = async (req, url, context, me
   if (req.method === 'GET' && url.pathname === '/v1/data/routines') {
     const { uid } = await context.requireAuth(req, meta);
     const limit = isValidLimitParam(url.searchParams.get('limit'), 200);
-    const routines = listRoutines(context.db, uid, limit);
+    const includeVideos = url.searchParams.get('includeVideos') === '1';
+    const routines = listRoutines(context.db, uid, { limit: limit ?? undefined, includeVideos });
     return withCors(req, json({ routines }), context.env.allowedOrigins);
   }
 
