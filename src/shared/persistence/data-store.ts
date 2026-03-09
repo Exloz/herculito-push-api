@@ -239,6 +239,11 @@ export type DashboardOutput = {
   exerciseProgress: DashboardExerciseProgressSummaryOutput[];
 };
 
+type DashboardExerciseLogInput = {
+  exerciseId?: string;
+  sets?: Array<{ completed?: boolean; weight?: number }>;
+};
+
 export type ExerciseLogInput = {
   exerciseId: string;
   date: string;
@@ -301,6 +306,16 @@ const ROUTINE_EXERCISE_QUERY_CHUNK_SIZE = 400;
 const SESSION_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const DASHBOARD_CALENDAR_SESSION_LIMIT = 365;
 const DASHBOARD_PROGRESS_SESSION_LIMIT = 200;
+
+const getCompletedNonZeroWeights = (log: DashboardExerciseLogInput): number[] => {
+  const completedSets = Array.isArray(log.sets)
+    ? log.sets.filter((set) => set?.completed === true && typeof set.weight === 'number' && Number.isFinite(set.weight) && set.weight > 0)
+    : [];
+
+  return completedSets
+    .map((set) => roundWeight(set.weight ?? 0))
+    .filter((weight) => weight > 0);
+};
 const APP_TIME_ZONE = 'America/Bogota';
 const FALLBACK_OFFSET_HOURS = -5;
 
@@ -1458,36 +1473,27 @@ export const getDashboardData = (db: Database, uid: string): DashboardOutput => 
   const unresolvedExerciseIds = new Set<string>();
 
   progressSessions.forEach((session) => {
-    const exerciseLogs = safeJsonParse<Array<{
-      exerciseId?: string;
-      sets?: Array<{ completed?: boolean; weight?: number }>;
-    }>>(session.exercises_json);
+    const exerciseLogs = safeJsonParse<DashboardExerciseLogInput[]>(session.exercises_json);
 
     if (!exerciseLogs || exerciseLogs.length === 0) {
       return;
     }
 
-    const routineWeights: Record<string, number[]> = {};
+    const routineWeights = session.routine_id
+      ? (lastWeightsByRoutine[session.routine_id] ?? {})
+      : undefined;
 
     exerciseLogs.forEach((log) => {
       if (!log || typeof log.exerciseId !== 'string' || log.exerciseId.trim().length === 0) {
         return;
       }
 
-      const completedSets = Array.isArray(log.sets)
-        ? log.sets.filter((set) => set?.completed === true && typeof set.weight === 'number' && Number.isFinite(set.weight) && set.weight > 0)
-        : [];
-
-      if (completedSets.length === 0) {
-        return;
-      }
-
-      const weights = completedSets.map((set) => roundWeight(set.weight ?? 0)).filter((weight) => weight > 0);
+      const weights = getCompletedNonZeroWeights(log);
       if (weights.length === 0) {
         return;
       }
 
-      if (session.routine_id && !lastWeightsByRoutine[session.routine_id]) {
+      if (routineWeights && !routineWeights[log.exerciseId]) {
         routineWeights[log.exerciseId] = weights;
       }
 
@@ -1508,7 +1514,7 @@ export const getDashboardData = (db: Database, uid: string): DashboardOutput => 
       pointsByExerciseId.set(log.exerciseId, points);
     });
 
-    if (session.routine_id && !lastWeightsByRoutine[session.routine_id] && Object.keys(routineWeights).length > 0) {
+    if (session.routine_id && routineWeights && Object.keys(routineWeights).length > 0) {
       lastWeightsByRoutine[session.routine_id] = routineWeights;
     }
   });
