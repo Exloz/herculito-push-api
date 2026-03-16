@@ -1995,3 +1995,686 @@ export const upsertWorkout = (db: Database, uid: string, workout: WorkoutInput):
       updated_at_ms = excluded.updated_at_ms
   `).run(uid, workout.id, JSON.stringify(workout), now, now);
 };
+
+// ===== SPORTS MODULE =====
+
+export type SportType = 'archery';
+
+export type ArcheryArrowInput = {
+  score: number;
+  isGold: boolean;
+};
+
+export type ArcheryEndInput = {
+  arrows: ArcheryArrowInput[];
+};
+
+export type ArcheryRoundInput = {
+  distance: number;
+  targetSize: number;
+  arrowsPerEnd: number;
+};
+
+export type SportSessionInput = {
+  sportType: SportType;
+  location?: string;
+  notes?: string;
+  archeryConfig?: {
+    bowType: string;
+    arrowsUsed: number;
+  };
+};
+
+export type ArcheryArrowOutput = {
+  id: string;
+  score: number;
+  isGold: boolean;
+  timestamp: number;
+};
+
+export type ArcheryEndOutput = {
+  id: string;
+  endNumber: number;
+  arrows: ArcheryArrowOutput[];
+  subtotal: number;
+  goldCount: number;
+};
+
+export type ArcheryRoundOutput = {
+  id: string;
+  distance: number;
+  targetSize: number;
+  arrowsPerEnd: number;
+  order: number;
+  ends: ArcheryEndOutput[];
+  totalScore: number;
+};
+
+export type SportSessionOutput = {
+  id: string;
+  userId: string;
+  sportType: SportType;
+  sportName: string;
+  location?: string;
+  notes?: string;
+  startedAt: number;
+  completedAt?: number;
+  status: 'active' | 'completed' | 'abandoned';
+  archeryData?: {
+    bowType: string;
+    arrowsUsed: number;
+    rounds: ArcheryRoundOutput[];
+    totalScore: number;
+    maxPossibleScore: number;
+    averageArrow: number;
+  };
+};
+
+export const startSportSession = (
+  db: Database,
+  uid: string,
+  input: SportSessionInput
+): SportSessionOutput => {
+  const now = Date.now();
+  const sessionId = crypto.randomUUID();
+  const archeryData = input.sportType === 'archery' && input.archeryConfig
+    ? {
+      bowType: input.archeryConfig.bowType,
+      arrowsUsed: input.archeryConfig.arrowsUsed,
+      rounds: [],
+      totalScore: 0,
+      maxPossibleScore: 0,
+      averageArrow: 0
+    }
+    : undefined;
+
+  db.query(`
+    INSERT INTO sport_sessions (
+      id, uid, sport_type, location, notes, started_at_ms, status,
+      archery_data_json, created_at_ms, updated_at_ms
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    sessionId,
+    uid,
+    input.sportType,
+    input.location ?? null,
+    input.notes ?? null,
+    now,
+    'active',
+    archeryData ? JSON.stringify(archeryData) : null,
+    now,
+    now
+  );
+
+  return {
+    id: sessionId,
+    userId: uid,
+    sportType: input.sportType,
+    sportName: input.sportType === 'archery' ? 'Tiro con Arco' : input.sportType,
+    location: input.location,
+    notes: input.notes,
+    startedAt: now,
+    status: 'active',
+    archeryData
+  };
+};
+
+export const addArcheryRound = (
+  db: Database,
+  uid: string,
+  sessionId: string,
+  input: ArcheryRoundInput
+): ArcheryRoundOutput => {
+  const now = Date.now();
+  const roundId = crypto.randomUUID();
+
+  // Get the current order index
+  const existingRounds = db.query<{ count: number }, [string]>(`
+    SELECT COUNT(*) as count FROM archery_rounds WHERE session_id = ?
+  `).get(sessionId);
+  const orderIndex = (existingRounds?.count ?? 0) + 1;
+
+  db.query(`
+    INSERT INTO archery_rounds (
+      id, session_id, distance, target_size, arrows_per_end, order_index,
+      total_score, created_at_ms, updated_at_ms
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+  `).run(
+    roundId,
+    sessionId,
+    input.distance,
+    input.targetSize,
+    input.arrowsPerEnd,
+    orderIndex,
+    now,
+    now
+  );
+
+  return {
+    id: roundId,
+    distance: input.distance,
+    targetSize: input.targetSize,
+    arrowsPerEnd: input.arrowsPerEnd,
+    order: orderIndex,
+    ends: [],
+    totalScore: 0
+  };
+};
+
+export const addArcheryEnd = (
+  db: Database,
+  uid: string,
+  sessionId: string,
+  roundId: string,
+  input: ArcheryEndInput
+): ArcheryEndOutput => {
+  const now = Date.now();
+  const endId = crypto.randomUUID();
+
+  // Calculate subtotal and gold count
+  let subtotal = 0;
+  let goldCount = 0;
+  const arrowsWithIds: ArcheryArrowOutput[] = [];
+
+  for (let i = 0; i < input.arrows.length; i += 1) {
+    const arrow = input.arrows[i];
+    subtotal += arrow.score;
+    if (arrow.isGold) goldCount += 1;
+    arrowsWithIds.push({
+      id: crypto.randomUUID(),
+      score: arrow.score,
+      isGold: arrow.isGold,
+      timestamp: now
+    });
+  }
+
+  // Get the current end number
+  const existingEnds = db.query<{ count: number }, [string]>(`
+    SELECT COUNT(*) as count FROM archery_ends WHERE round_id = ?
+  `).get(roundId);
+  const endNumber = (existingEnds?.count ?? 0) + 1;
+
+  // Insert end
+  db.query(`
+    INSERT INTO archery_ends (id, round_id, end_number, subtotal, gold_count, created_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(endId, roundId, endNumber, subtotal, goldCount, now);
+
+  // Insert arrows
+  for (let i = 0; i < arrowsWithIds.length; i += 1) {
+    const arrow = arrowsWithIds[i];
+    db.query(`
+      INSERT INTO archery_arrows (id, end_id, score, is_gold, arrow_order, timestamp_ms)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(arrow.id, endId, arrow.score, arrow.isGold ? 1 : 0, i + 1, arrow.timestamp);
+  }
+
+  // Update round total score
+  db.query(`
+    UPDATE archery_rounds
+    SET total_score = total_score + ?, updated_at_ms = ?
+    WHERE id = ?
+  `).run(subtotal, now, roundId);
+
+  // Update session stats
+  updateArcherySessionStats(db, sessionId);
+
+  return {
+    id: endId,
+    endNumber,
+    arrows: arrowsWithIds,
+    subtotal,
+    goldCount
+  };
+};
+
+const updateArcherySessionStats = (db: Database, sessionId: string): void => {
+  const now = Date.now();
+
+  // Calculate total stats
+  const stats = db.query<{
+    totalScore: number;
+    totalArrows: number;
+    goldCount: number;
+    maxPossible: number;
+  }, [string]>(`
+    SELECT
+      COALESCE(SUM(r.total_score), 0) as totalScore,
+      COALESCE(SUM((SELECT COUNT(*) FROM archery_arrows a JOIN archery_ends e ON a.end_id = e.id WHERE e.round_id = r.id)), 0) as totalArrows,
+      COALESCE(SUM((SELECT COUNT(*) FROM archery_arrows a JOIN archery_ends e ON a.end_id = e.id WHERE e.round_id = r.id AND a.is_gold = 1)), 0) as goldCount,
+      COALESCE(SUM(r.arrows_per_end * 10 * (SELECT COUNT(*) FROM archery_ends WHERE round_id = r.id)), 0) as maxPossible
+    FROM archery_rounds r
+    WHERE r.session_id = ?
+  `).get(sessionId);
+
+  if (!stats) return;
+
+  const averageArrow = stats.totalArrows > 0 ? stats.totalScore / stats.totalArrows : 0;
+
+  // Get existing archery data
+  const session = db.query<{ archery_data_json: string }, [string]>(`
+    SELECT archery_data_json FROM sport_sessions WHERE id = ?
+  `).get(sessionId);
+
+  if (session?.archery_data_json) {
+    const existingData = safeJsonParse<{
+      bowType: string;
+      arrowsUsed: number;
+    }>(session.archery_data_json);
+
+    const updatedData = {
+      bowType: existingData?.bowType ?? 'recurve',
+      arrowsUsed: existingData?.arrowsUsed ?? 0,
+      totalScore: stats.totalScore,
+      maxPossibleScore: stats.maxPossible,
+      averageArrow: Math.round(averageArrow * 100) / 100,
+      goldCount: stats.goldCount
+    };
+
+    db.query(`
+      UPDATE sport_sessions
+      SET archery_data_json = ?, updated_at_ms = ?
+      WHERE id = ?
+    `).run(JSON.stringify(updatedData), now, sessionId);
+  }
+};
+
+export const completeSportSession = (
+  db: Database,
+  uid: string,
+  sessionId: string,
+  notes?: string
+): void => {
+  const now = Date.now();
+
+  db.query(`
+    UPDATE sport_sessions
+    SET status = ?, completed_at_ms = ?, notes = COALESCE(?, notes), updated_at_ms = ?
+    WHERE id = ? AND uid = ?
+  `).run('completed', now, notes ?? null, now, sessionId, uid);
+};
+
+export const listSportSessions = (
+  db: Database,
+  uid: string,
+  options?: {
+    sportType?: SportType;
+    limit?: number;
+    completedOnly?: boolean;
+  }
+): SportSessionOutput[] => {
+  let query = `
+    SELECT
+      id,
+      uid as userId,
+      sport_type as sportType,
+      location,
+      notes,
+      started_at_ms as startedAt,
+      completed_at_ms as completedAt,
+      status,
+      archery_data_json as archeryDataJson
+    FROM sport_sessions
+    WHERE uid = ?
+  `;
+  const params: (string | number)[] = [uid];
+
+  if (options?.sportType) {
+    query += ' AND sport_type = ?';
+    params.push(options.sportType);
+  }
+
+  if (options?.completedOnly) {
+    query += ' AND status = \'completed\'';
+  }
+
+  query += ' ORDER BY started_at_ms DESC';
+
+  if (options?.limit) {
+    query += ' LIMIT ?';
+    params.push(options.limit);
+  }
+
+  const rows = db.query<{
+    id: string;
+    userId: string;
+    sportType: SportType;
+    location: string | null;
+    notes: string | null;
+    startedAt: number;
+    completedAt: number | null;
+    status: 'active' | 'completed' | 'abandoned';
+    archeryDataJson: string | null;
+  }, (string | number)[]>(query).all(...params);
+
+  return rows.map((row) => {
+    const archeryData = row.archeryDataJson
+      ? safeJsonParse<{
+        bowType: string;
+        arrowsUsed: number;
+        totalScore: number;
+        maxPossibleScore: number;
+        averageArrow: number;
+        goldCount?: number;
+      }>(row.archeryDataJson)
+      : undefined;
+
+    return {
+      id: row.id,
+      userId: row.userId,
+      sportType: row.sportType,
+      sportName: row.sportType === 'archery' ? 'Tiro con Arco' : row.sportType,
+      location: row.location ?? undefined,
+      notes: row.notes ?? undefined,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt ?? undefined,
+      status: row.status,
+      archeryData: archeryData ? {
+        bowType: archeryData.bowType,
+        arrowsUsed: archeryData.arrowsUsed,
+        rounds: [], // Rounds loaded separately if needed
+        totalScore: archeryData.totalScore ?? 0,
+        maxPossibleScore: archeryData.maxPossibleScore ?? 0,
+        averageArrow: archeryData.averageArrow ?? 0
+      } : undefined
+    };
+  });
+};
+
+export const getSportSessionWithDetails = (
+  db: Database,
+  uid: string,
+  sessionId: string
+): SportSessionOutput | null => {
+  const session = db.query<{
+    id: string;
+    userId: string;
+    sportType: SportType;
+    location: string | null;
+    notes: string | null;
+    startedAt: number;
+    completedAt: number | null;
+    status: 'active' | 'completed' | 'abandoned';
+    archeryDataJson: string | null;
+  }, [string, string]>(`
+    SELECT
+      id,
+      uid as userId,
+      sport_type as sportType,
+      location,
+      notes,
+      started_at_ms as startedAt,
+      completed_at_ms as completedAt,
+      status,
+      archery_data_json as archeryDataJson
+    FROM sport_sessions
+    WHERE id = ? AND uid = ?
+  `).get(sessionId, uid);
+
+  if (!session) return null;
+
+  // Load archery rounds with ends and arrows
+  let archeryData: SportSessionOutput['archeryData'];
+
+  if (session.sportType === 'archery' && session.archeryDataJson) {
+    const archeryMeta = safeJsonParse<{
+      bowType: string;
+      arrowsUsed: number;
+      totalScore: number;
+      maxPossibleScore: number;
+      averageArrow: number;
+    }>(session.archeryDataJson);
+
+    const rounds = loadArcheryRounds(db, sessionId);
+
+    archeryData = {
+      bowType: archeryMeta?.bowType ?? 'recurve',
+      arrowsUsed: archeryMeta?.arrowsUsed ?? 0,
+      rounds,
+      totalScore: archeryMeta?.totalScore ?? 0,
+      maxPossibleScore: archeryMeta?.maxPossibleScore ?? 0,
+      averageArrow: archeryMeta?.averageArrow ?? 0
+    };
+  }
+
+  return {
+    id: session.id,
+    userId: session.userId,
+    sportType: session.sportType,
+    sportName: session.sportType === 'archery' ? 'Tiro con Arco' : session.sportType,
+    location: session.location ?? undefined,
+    notes: session.notes ?? undefined,
+    startedAt: session.startedAt,
+    completedAt: session.completedAt ?? undefined,
+    status: session.status,
+    archeryData
+  };
+};
+
+const loadArcheryRounds = (db: Database, sessionId: string): ArcheryRoundOutput[] => {
+  const rounds = db.query<{
+    id: string;
+    distance: number;
+    targetSize: number;
+    arrowsPerEnd: number;
+    orderIndex: number;
+    totalScore: number;
+  }, [string]>(`
+    SELECT
+      id,
+      distance,
+      target_size as targetSize,
+      arrows_per_end as arrowsPerEnd,
+      order_index as orderIndex,
+      total_score as totalScore
+    FROM archery_rounds
+    WHERE session_id = ?
+    ORDER BY order_index ASC
+  `).all(sessionId);
+
+  return rounds.map((round) => ({
+    id: round.id,
+    distance: round.distance,
+    targetSize: round.targetSize,
+    arrowsPerEnd: round.arrowsPerEnd,
+    order: round.orderIndex,
+    ends: loadArcheryEnds(db, round.id),
+    totalScore: round.totalScore
+  }));
+};
+
+const loadArcheryEnds = (db: Database, roundId: string): ArcheryEndOutput[] => {
+  const ends = db.query<{
+    id: string;
+    endNumber: number;
+    subtotal: number;
+    goldCount: number;
+  }, [string]>(`
+    SELECT
+      id,
+      end_number as endNumber,
+      subtotal,
+      gold_count as goldCount
+    FROM archery_ends
+    WHERE round_id = ?
+    ORDER BY end_number ASC
+  `).all(roundId);
+
+  return ends.map((end) => ({
+    id: end.id,
+    endNumber: end.endNumber,
+    subtotal: end.subtotal,
+    goldCount: end.goldCount,
+    arrows: loadArcheryArrows(db, end.id)
+  }));
+};
+
+const loadArcheryArrows = (db: Database, endId: string): ArcheryArrowOutput[] => {
+  const arrows = db.query<{
+    id: string;
+    score: number;
+    isGold: number;
+    timestampMs: number;
+  }, [string]>(`
+    SELECT
+      id,
+      score,
+      is_gold as isGold,
+      timestamp_ms as timestampMs
+    FROM archery_arrows
+    WHERE end_id = ?
+    ORDER BY arrow_order ASC
+  `).all(endId);
+
+  return arrows.map((arrow) => ({
+    id: arrow.id,
+    score: arrow.score,
+    isGold: arrow.isGold === 1,
+    timestamp: arrow.timestampMs
+  }));
+};
+
+export const deleteSportSession = (db: Database, uid: string, sessionId: string): void => {
+  db.query(`DELETE FROM sport_sessions WHERE id = ? AND uid = ?`).run(sessionId, uid);
+};
+
+export const getSportStats = (
+  db: Database,
+  uid: string,
+  sportType?: SportType
+): {
+  totalSessions: number;
+  thisWeekSessions: number;
+  thisMonthSessions: number;
+  currentStreak: number;
+  longestStreak: number;
+  totalArrowsShot: number;
+  averageScore: number;
+  personalBest: number;
+} => {
+  const now = Date.now();
+  const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const oneMonthAgo = now - 30 * 24 * 60 * 60 * 1000;
+
+  let query = `
+    SELECT
+      COUNT(*) as totalSessions,
+      SUM(CASE WHEN completed_at_ms >= ? THEN 1 ELSE 0 END) as thisWeekSessions,
+      SUM(CASE WHEN completed_at_ms >= ? THEN 1 ELSE 0 END) as thisMonthSessions,
+      COALESCE(SUM(CASE WHEN archery_data_json IS NOT NULL THEN
+        json_extract(archery_data_json, '$.arrowsUsed') ELSE 0 END), 0) as totalArrowsShot,
+      COALESCE(AVG(CASE WHEN archery_data_json IS NOT NULL THEN
+        json_extract(archery_data_json, '$.averageArrow') ELSE NULL END), 0) as averageScore,
+      COALESCE(MAX(CASE WHEN archery_data_json IS NOT NULL THEN
+        json_extract(archery_data_json, '$.totalScore') ELSE 0 END), 0) as personalBest
+    FROM sport_sessions
+    WHERE uid = ? AND status = 'completed'
+  `;
+  const params: (string | number)[] = [oneWeekAgo, oneMonthAgo, uid];
+
+  if (sportType) {
+    query += ' AND sport_type = ?';
+    params.push(sportType);
+  }
+
+  const stats = db.query<{
+    totalSessions: number;
+    thisWeekSessions: number;
+    thisMonthSessions: number;
+    totalArrowsShot: number;
+    averageScore: number;
+    personalBest: number;
+  }, (string | number)[]>(query).get(...params);
+
+  // Calculate streaks
+  const sessions = db.query<{ completedAt: number }, (string | number)[]>(`
+    SELECT completed_at_ms as completedAt
+    FROM sport_sessions
+    WHERE uid = ? AND status = 'completed'
+    ${sportType ? 'AND sport_type = ?' : ''}
+    ORDER BY completed_at_ms DESC
+  `).all(...(sportType ? [uid, sportType] : [uid]));
+
+  const streaks = calculateStreaks(sessions.map((s) => s.completedAt));
+
+  return {
+    totalSessions: stats?.totalSessions ?? 0,
+    thisWeekSessions: stats?.thisWeekSessions ?? 0,
+    thisMonthSessions: stats?.thisMonthSessions ?? 0,
+    currentStreak: streaks.current,
+    longestStreak: streaks.longest,
+    totalArrowsShot: stats?.totalArrowsShot ?? 0,
+    averageScore: Math.round((stats?.averageScore ?? 0) * 100) / 100,
+    personalBest: stats?.personalBest ?? 0
+  };
+};
+
+const calculateStreaks = (completedAts: number[]): { current: number; longest: number } => {
+  if (completedAts.length === 0) return { current: 0, longest: 0 };
+
+  const days = new Set(
+    completedAts.map((ts) => {
+      const date = new Date(ts);
+      return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    })
+  );
+
+  const sortedDays = Array.from(days).sort().reverse();
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+  const yesterdayKey = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+
+  let current = 0;
+  let longest = 0;
+  let tempStreak = 0;
+
+  // Check if streak is active (today or yesterday)
+  if (sortedDays[0] === todayKey) {
+    current = 1;
+  } else if (sortedDays[0] === yesterdayKey) {
+    current = 1;
+  }
+
+  // Calculate longest streak
+  for (let i = 0; i < sortedDays.length; i += 1) {
+    if (i === 0) {
+      tempStreak = 1;
+    } else {
+      const prev = sortedDays[i - 1].split('-').map(Number);
+      const curr = sortedDays[i].split('-').map(Number);
+      const prevDate = new Date(prev[0], prev[1], prev[2]);
+      const currDate = new Date(curr[0], curr[1], curr[2]);
+      const diff = (prevDate.getTime() - currDate.getTime()) / (24 * 60 * 60 * 1000);
+
+      if (diff === 1) {
+        tempStreak += 1;
+      } else {
+        longest = Math.max(longest, tempStreak);
+        tempStreak = 1;
+      }
+    }
+  }
+  longest = Math.max(longest, tempStreak);
+
+  // Calculate current streak
+  if (current === 1) {
+    for (let i = 1; i < sortedDays.length; i += 1) {
+      const prev = sortedDays[i - 1].split('-').map(Number);
+      const curr = sortedDays[i].split('-').map(Number);
+      const prevDate = new Date(prev[0], prev[1], prev[2]);
+      const currDate = new Date(curr[0], curr[1], curr[2]);
+      const diff = (prevDate.getTime() - currDate.getTime()) / (24 * 60 * 60 * 1000);
+
+      if (diff === 1) {
+        current += 1;
+      } else {
+        break;
+      }
+    }
+  }
+
+  return { current, longest };
+};

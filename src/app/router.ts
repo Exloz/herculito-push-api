@@ -14,6 +14,7 @@ import { handleSessionRoutes } from '../modules/sessions/routes';
 import { handleWorkoutRoutes } from '../modules/workouts/routes';
 import { handleMusclewikiRoutes } from '../modules/musclewiki/routes';
 import { handleAdminRoutes } from '../modules/admin/routes';
+import { handleSportsRoutes } from '../modules/sports/routes';
 import type { createMusclewikiService } from '../modules/musclewiki/service';
 
 export interface AppRouteContext extends RequestContext {
@@ -40,7 +41,8 @@ const routeHandlers: AppRouteHandler[] = [
   handleSessionRoutes,
   handleAdminRoutes,
   handleWorkoutRoutes,
-  handleMusclewikiRoutes
+  handleMusclewikiRoutes,
+  handleSportsRoutes
 ];
 
 export const createAppRouter = (context: AppRouteContext) => {

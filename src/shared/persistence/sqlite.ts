@@ -213,6 +213,63 @@ export const createDb = (databasePath: string): Database => {
 
     CREATE INDEX IF NOT EXISTS workouts_uid_updated_idx ON workouts (uid, updated_at_ms DESC);
     CREATE INDEX IF NOT EXISTS user_profiles_updated_idx ON user_profiles (updated_at_ms DESC);
+
+    -- Sports module tables
+    CREATE TABLE IF NOT EXISTS sport_sessions (
+      id TEXT PRIMARY KEY,
+      uid TEXT NOT NULL,
+      sport_type TEXT NOT NULL,
+      location TEXT,
+      notes TEXT,
+      started_at_ms INTEGER NOT NULL,
+      completed_at_ms INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      archery_data_json TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS sport_sessions_user_idx ON sport_sessions (uid, started_at_ms);
+    CREATE INDEX IF NOT EXISTS sport_sessions_type_idx ON sport_sessions (uid, sport_type, started_at_ms);
+
+    CREATE TABLE IF NOT EXISTS archery_rounds (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      distance INTEGER NOT NULL,
+      target_size INTEGER NOT NULL,
+      arrows_per_end INTEGER NOT NULL DEFAULT 6,
+      order_index INTEGER NOT NULL,
+      total_score INTEGER NOT NULL DEFAULT 0,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sport_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS archery_rounds_session_idx ON archery_rounds (session_id, order_index);
+
+    CREATE TABLE IF NOT EXISTS archery_ends (
+      id TEXT PRIMARY KEY,
+      round_id TEXT NOT NULL,
+      end_number INTEGER NOT NULL,
+      subtotal INTEGER NOT NULL DEFAULT 0,
+      gold_count INTEGER NOT NULL DEFAULT 0,
+      created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (round_id) REFERENCES archery_rounds(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS archery_ends_round_idx ON archery_ends (round_id, end_number);
+
+    CREATE TABLE IF NOT EXISTS archery_arrows (
+      id TEXT PRIMARY KEY,
+      end_id TEXT NOT NULL,
+      score INTEGER NOT NULL,
+      is_gold INTEGER NOT NULL DEFAULT 0,
+      arrow_order INTEGER NOT NULL,
+      timestamp_ms INTEGER NOT NULL,
+      FOREIGN KEY (end_id) REFERENCES archery_ends(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS archery_arrows_end_idx ON archery_arrows (end_id, arrow_order);
   `);
 
   // Best-effort migration: older deployments had workouts(id PK) without uid.
