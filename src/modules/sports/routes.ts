@@ -16,9 +16,21 @@ import type { AppRouteHandler } from '../../app/router';
 
 export const handleSportsRoutes: AppRouteHandler = async (req, url, context, meta) => {
   const origins = context.env.allowedOrigins;
+  const isPath = (pathname: string): boolean => {
+    return url.pathname === pathname || url.pathname === pathname.replace('/v1/', '/v1/data/');
+  };
+  const getSportsPathParts = (): string[] => {
+    if (url.pathname.startsWith('/v1/data/sports/')) {
+      return url.pathname.split('/').slice(4);
+    }
+    if (url.pathname.startsWith('/v1/sports/')) {
+      return url.pathname.split('/').slice(3);
+    }
+    return [];
+  };
 
   // List sport sessions
-  if (req.method === 'GET' && url.pathname === '/v1/sports/sessions') {
+  if (req.method === 'GET' && isPath('/v1/sports/sessions')) {
     const { uid } = await context.requireAuth(req, meta);
     const sportType = url.searchParams.get('sportType') as 'archery' | undefined;
     const limit = parseInt(url.searchParams.get('limit') ?? '100', 10);
@@ -34,12 +46,16 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Get single session with details
-  if (req.method === 'GET' && url.pathname.startsWith('/v1/sports/sessions/')) {
+  if (
+    req.method === 'GET'
+    && (url.pathname.startsWith('/v1/sports/sessions/') || url.pathname.startsWith('/v1/data/sports/sessions/'))
+  ) {
     const { uid } = await context.requireAuth(req, meta);
-    const sessionId = url.pathname.split('/').pop();
+    const pathParts = getSportsPathParts();
+    const sessionId = pathParts[1];
 
-    if (!sessionId) {
-      return withCors(req, json({ error: 'invalid_session_id' }, { status: 400 }), origins);
+    if (pathParts.length !== 2 || !sessionId) {
+      return null;
     }
 
     const session = getSportSessionWithDetails(context.db, uid, sessionId);
@@ -52,7 +68,7 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Start new sport session
-  if (req.method === 'POST' && url.pathname === '/v1/sports/sessions/start') {
+  if (req.method === 'POST' && isPath('/v1/sports/sessions/start')) {
     const { uid } = await context.requireAuth(req, meta);
     const body = await getJsonBody<SportSessionInput>(req);
 
@@ -69,9 +85,14 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Add archery round to session
-  if (req.method === 'POST' && url.pathname.match(/\/v1\/sports\/sessions\/[^/]+\/archery\/rounds$/)) {
+  if (
+    req.method === 'POST'
+    && (url.pathname.match(/\/v1\/sports\/sessions\/[^/]+\/archery\/rounds$/)
+      || url.pathname.match(/\/v1\/data\/sports\/sessions\/[^/]+\/archery\/rounds$/))
+  ) {
     const { uid } = await context.requireAuth(req, meta);
-    const sessionId = url.pathname.split('/')[4];
+    const pathParts = getSportsPathParts();
+    const sessionId = pathParts[1];
     const body = await getJsonBody<ArcheryRoundInput>(req);
 
     if (!sessionId) {
@@ -96,11 +117,15 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Add end to archery round
-  if (req.method === 'POST' && url.pathname.match(/\/v1\/sports\/sessions\/[^/]+\/archery\/rounds\/[^/]+\/ends$/)) {
+  if (
+    req.method === 'POST'
+    && (url.pathname.match(/\/v1\/sports\/sessions\/[^/]+\/archery\/rounds\/[^/]+\/ends$/)
+      || url.pathname.match(/\/v1\/data\/sports\/sessions\/[^/]+\/archery\/rounds\/[^/]+\/ends$/))
+  ) {
     const { uid } = await context.requireAuth(req, meta);
-    const pathParts = url.pathname.split('/');
-    const sessionId = pathParts[4];
-    const roundId = pathParts[6];
+    const pathParts = getSportsPathParts();
+    const sessionId = pathParts[1];
+    const roundId = pathParts[4];
 
     if (!sessionId || !roundId) {
       return withCors(req, json({ error: 'invalid_ids' }, { status: 400 }), origins);
@@ -124,9 +149,14 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Complete sport session
-  if (req.method === 'POST' && url.pathname.match(/\/v1\/sports\/sessions\/[^/]+\/complete$/)) {
+  if (
+    req.method === 'POST'
+    && (url.pathname.match(/\/v1\/sports\/sessions\/[^/]+\/complete$/)
+      || url.pathname.match(/\/v1\/data\/sports\/sessions\/[^/]+\/complete$/))
+  ) {
     const { uid } = await context.requireAuth(req, meta);
-    const sessionId = url.pathname.split('/')[4];
+    const pathParts = getSportsPathParts();
+    const sessionId = pathParts[1];
     const body = await getJsonBody<{ notes?: string }>(req);
 
     if (!sessionId) {
@@ -138,9 +168,14 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Delete sport session
-  if (req.method === 'DELETE' && url.pathname.match(/\/v1\/sports\/sessions\/[^/]+$/)) {
+  if (
+    req.method === 'DELETE'
+    && (url.pathname.match(/\/v1\/sports\/sessions\/[^/]+$/)
+      || url.pathname.match(/\/v1\/data\/sports\/sessions\/[^/]+$/))
+  ) {
     const { uid } = await context.requireAuth(req, meta);
-    const sessionId = url.pathname.split('/').pop();
+    const pathParts = getSportsPathParts();
+    const sessionId = pathParts[1];
 
     if (!sessionId) {
       return withCors(req, json({ error: 'invalid_session_id' }, { status: 400 }), origins);
@@ -151,7 +186,7 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
   }
 
   // Get sport stats
-  if (req.method === 'GET' && url.pathname === '/v1/sports/stats') {
+  if (req.method === 'GET' && isPath('/v1/sports/stats')) {
     const { uid } = await context.requireAuth(req, meta);
     const sportType = url.searchParams.get('sportType') as 'archery' | undefined;
 
