@@ -82,7 +82,7 @@ export const corsPreflight = (req: Request, allowedOrigins: string[]): Response 
     headers.set('access-control-allow-credentials', 'true');
   }
 
-  headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
+  headers.set('access-control-allow-methods', 'GET,POST,PUT,DELETE,OPTIONS');
   headers.set('access-control-allow-headers', 'content-type,authorization');
   headers.set('access-control-max-age', '600');
 
