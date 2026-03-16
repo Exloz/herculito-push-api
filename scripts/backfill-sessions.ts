@@ -1,4 +1,4 @@
-import { createDb } from '../src/db';
+import { createDb } from '../src/shared/persistence/sqlite';
 
 const getArgValue = (name: string): string | null => {
   const index = Bun.argv.indexOf(name);

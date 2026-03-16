@@ -1,5 +1,5 @@
-import { createDb } from '../src/db';
-import { createExercise } from '../src/data';
+import { createDb } from '../src/shared/persistence/sqlite';
+import { createExercise } from '../src/shared/persistence/data-store';
 
 type ExerciseVideoVariant = { url: string; kind: string };
 type ExerciseVideo = {
