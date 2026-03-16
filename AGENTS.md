@@ -209,3 +209,62 @@ Ver `ARCHITECTURE.md` para documentación detallada.
 - All admin endpoints require auth + admin check
 - Validate all user input before database operations
 - CORS origins must be explicitly configured in production
+
+## Database Permissions (Critical for Deployment)
+
+The application requires write access to the SQLite database file and its directory:
+
+- **Database path**: Configurable via `DATABASE_PATH` env var (default: `/data/push.sqlite`)
+- **Required permissions**: The application user (uid 1001 / `bunuser`) must have read/write access to:
+  1. The database file (`/data/push.sqlite`)
+  2. The database directory (`/data/`) for WAL and journal files
+
+### Common Deployment Issues
+
+#### Read-Only Database Error
+```
+SQLiteError: attempt to write a readonly database
+```
+
+**Solution**: Ensure the volume mount has correct permissions:
+```bash
+# For Docker deployments, chown the data directory before starting:
+chown -R 1001:1001 /data
+
+# Or in docker-compose.yml:
+volumes:
+  - ./data:/data
+# Then: chown -R 1001:1001 ./data
+```
+
+#### Container User
+The Dockerfile runs as `bunuser` (uid 1001). Ensure your volume mounts permit this user to write.
+
+### Migration Safety
+
+Schema migrations are designed to be non-fatal:
+- Core schema migrations warn but continue on failure
+- Sports module migrations log warnings for read-only databases but allow startup
+- The app can start in degraded mode if migrations fail (some features unavailable)
+
+## Sports Module
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/data/sports/sessions` | List sport sessions |
+| GET | `/v1/data/sports/sessions/:id` | Get session details |
+| POST | `/v1/data/sports/sessions/start` | Start new session |
+| POST | `/v1/data/sports/sessions/:id/archery/rounds` | Add archery round |
+| POST | `/v1/data/sports/sessions/:id/archery/rounds/:rid/ends` | Add end to round |
+| POST | `/v1/data/sports/sessions/:id/complete` | Complete session |
+| DELETE | `/v1/data/sports/sessions/:id` | Delete session |
+| GET | `/v1/data/sports/stats` | Get sport statistics |
+
+### Database Tables
+
+- `sport_sessions` - Main sport session records
+- `archery_rounds` - Rounds within archery sessions
+- `archery_ends` - Ends (groups of arrows) within rounds
+- `archery_arrows` - Individual arrow scores

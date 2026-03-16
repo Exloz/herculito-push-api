@@ -2,8 +2,11 @@ FROM oven/bun:1.1.38-alpine
 
 WORKDIR /app
 
+# Create data directory with correct permissions before user switch
 RUN addgroup -g 1001 -S bunuser && \
-    adduser -S -D -H -u 1001 -h /app -s /sbin/nologin -G bunuser -g bunuser bunuser
+    adduser -S -D -H -u 1001 -h /app -s /sbin/nologin -G bunuser -g bunuser bunuser && \
+    mkdir -p /data && \
+    chown -R bunuser:bunuser /data
 
 COPY package.json bun.lock tsconfig.json ./
 
@@ -14,7 +17,11 @@ RUN bun install --frozen-lockfile --production --no-cache && \
 COPY src ./src
 RUN chown -R bunuser:bunuser /app
 
+# Volume for SQLite database
+VOLUME ["/data"]
+
 ENV PORT=3000
+ENV DATABASE_PATH=/data/push.sqlite
 
 EXPOSE 3000
 

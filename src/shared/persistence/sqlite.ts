@@ -264,88 +264,118 @@ export const createDb = (databasePath: string): Database => {
     }));
   }
 
-  // Sports schema is created separately to avoid startup failures on partially-migrated DBs.
-  try {
-    const hasTable = (tableName: string): boolean => {
-      const row = db.query<{ name: string }, [string]>(`
-        SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1
-      `).get(tableName);
-      return !!row;
-    };
+  // Sports schema migration - non-fatal for read-only database scenarios.
+  // In containerized deployments, the database volume may be read-only on first run,
+  // or the application user may lack write permissions. This allows the app to start
+  // and serve read-only requests while logging the issue for infrastructure teams.
+  const runSportsMigration = (): { success: boolean; error?: string } => {
+    try {
+      const hasTable = (tableName: string): boolean => {
+        const row = db.query<{ name: string }, [string]>(`
+          SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1
+        `).get(tableName);
+        return !!row;
+      };
 
-    if (!hasTable('sport_sessions')) {
-      db.exec(`DROP TABLE IF EXISTS archery_arrows`);
-      db.exec(`DROP TABLE IF EXISTS archery_ends`);
-      db.exec(`DROP TABLE IF EXISTS archery_rounds`);
+      // If sport_sessions doesn't exist, clean up any orphaned child tables first
+      if (!hasTable('sport_sessions')) {
+        db.exec(`DROP TABLE IF EXISTS archery_arrows`);
+        db.exec(`DROP TABLE IF EXISTS archery_ends`);
+        db.exec(`DROP TABLE IF EXISTS archery_rounds`);
+      }
+
+      // Create parent table first
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sport_sessions (
+          id TEXT PRIMARY KEY,
+          uid TEXT NOT NULL,
+          sport_type TEXT NOT NULL,
+          location TEXT,
+          notes TEXT,
+          started_at_ms INTEGER NOT NULL,
+          completed_at_ms INTEGER,
+          status TEXT NOT NULL DEFAULT 'active',
+          archery_data_json TEXT,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL
+        )
+      `);
+      db.exec(`CREATE INDEX IF NOT EXISTS sport_sessions_user_idx ON sport_sessions (uid, started_at_ms)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS sport_sessions_type_idx ON sport_sessions (uid, sport_type, started_at_ms)`);
+
+      // Create child tables in dependency order
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS archery_rounds (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          distance INTEGER NOT NULL,
+          target_size INTEGER NOT NULL,
+          arrows_per_end INTEGER NOT NULL DEFAULT 6,
+          order_index INTEGER NOT NULL,
+          total_score INTEGER NOT NULL DEFAULT 0,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES sport_sessions(id) ON DELETE CASCADE
+        )
+      `);
+      db.exec(`CREATE INDEX IF NOT EXISTS archery_rounds_session_idx ON archery_rounds (session_id, order_index)`);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS archery_ends (
+          id TEXT PRIMARY KEY,
+          round_id TEXT NOT NULL,
+          end_number INTEGER NOT NULL,
+          subtotal INTEGER NOT NULL DEFAULT 0,
+          gold_count INTEGER NOT NULL DEFAULT 0,
+          created_at_ms INTEGER NOT NULL,
+          FOREIGN KEY (round_id) REFERENCES archery_rounds(id) ON DELETE CASCADE
+        )
+      `);
+      db.exec(`CREATE INDEX IF NOT EXISTS archery_ends_round_idx ON archery_ends (round_id, end_number)`);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS archery_arrows (
+          id TEXT PRIMARY KEY,
+          end_id TEXT NOT NULL,
+          score INTEGER NOT NULL,
+          is_gold INTEGER NOT NULL DEFAULT 0,
+          arrow_order INTEGER NOT NULL,
+          timestamp_ms INTEGER NOT NULL,
+          FOREIGN KEY (end_id) REFERENCES archery_ends(id) ON DELETE CASCADE
+        )
+      `);
+      db.exec(`CREATE INDEX IF NOT EXISTS archery_arrows_end_idx ON archery_arrows (end_id, arrow_order)`);
+
+      return { success: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, error: errorMessage };
     }
+  };
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS sport_sessions (
-        id TEXT PRIMARY KEY,
-        uid TEXT NOT NULL,
-        sport_type TEXT NOT NULL,
-        location TEXT,
-        notes TEXT,
-        started_at_ms INTEGER NOT NULL,
-        completed_at_ms INTEGER,
-        status TEXT NOT NULL DEFAULT 'active',
-        archery_data_json TEXT,
-        created_at_ms INTEGER NOT NULL,
-        updated_at_ms INTEGER NOT NULL
-      )
-    `);
-    db.exec(`CREATE INDEX IF NOT EXISTS sport_sessions_user_idx ON sport_sessions (uid, started_at_ms)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS sport_sessions_type_idx ON sport_sessions (uid, sport_type, started_at_ms)`);
-
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS archery_rounds (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        distance INTEGER NOT NULL,
-        target_size INTEGER NOT NULL,
-        arrows_per_end INTEGER NOT NULL DEFAULT 6,
-        order_index INTEGER NOT NULL,
-        total_score INTEGER NOT NULL DEFAULT 0,
-        created_at_ms INTEGER NOT NULL,
-        updated_at_ms INTEGER NOT NULL,
-        FOREIGN KEY (session_id) REFERENCES sport_sessions(id) ON DELETE CASCADE
-      )
-    `);
-    db.exec(`CREATE INDEX IF NOT EXISTS archery_rounds_session_idx ON archery_rounds (session_id, order_index)`);
-
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS archery_ends (
-        id TEXT PRIMARY KEY,
-        round_id TEXT NOT NULL,
-        end_number INTEGER NOT NULL,
-        subtotal INTEGER NOT NULL DEFAULT 0,
-        gold_count INTEGER NOT NULL DEFAULT 0,
-        created_at_ms INTEGER NOT NULL,
-        FOREIGN KEY (round_id) REFERENCES archery_rounds(id) ON DELETE CASCADE
-      )
-    `);
-    db.exec(`CREATE INDEX IF NOT EXISTS archery_ends_round_idx ON archery_ends (round_id, end_number)`);
-
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS archery_arrows (
-        id TEXT PRIMARY KEY,
-        end_id TEXT NOT NULL,
-        score INTEGER NOT NULL,
-        is_gold INTEGER NOT NULL DEFAULT 0,
-        arrow_order INTEGER NOT NULL,
-        timestamp_ms INTEGER NOT NULL,
-        FOREIGN KEY (end_id) REFERENCES archery_ends(id) ON DELETE CASCADE
-      )
-    `);
-    db.exec(`CREATE INDEX IF NOT EXISTS archery_arrows_end_idx ON archery_arrows (end_id, arrow_order)`);
-  } catch (error) {
+  const migrationResult = runSportsMigration();
+  if (!migrationResult.success) {
+    const isReadOnlyError = migrationResult.error?.includes('readonly') || 
+                           migrationResult.error?.includes('SQLITE_READONLY') ||
+                           migrationResult.error?.includes('attempt to write');
+    const logLevel = isReadOnlyError ? 'warn' : 'error';
+    const logEvent = isReadOnlyError ? 'db_migration_readonly' : 'db_migration_failed';
+    
     console.error(JSON.stringify({
-      level: 'error',
-      event: 'db_migration_failed',
+      level: logLevel,
+      event: logEvent,
       migration: 'sports_schema',
-      error: error instanceof Error ? error.message : String(error)
+      error: migrationResult.error,
+      hint: isReadOnlyError 
+        ? 'Database appears to be read-only. Sports features will be unavailable. Ensure the /data directory and database file are writable by the application user (uid 1001). Check volume mount permissions in your deployment.'
+        : undefined
     }));
-    throw error;
+
+    // Only throw for non-read-only errors. Read-only errors allow app to start
+    // but sports features will fail at runtime with clear error messages.
+    if (!isReadOnlyError) {
+      throw new Error(`Sports schema migration failed: ${migrationResult.error}`);
+    }
   }
 
   return db;
