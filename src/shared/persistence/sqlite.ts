@@ -266,6 +266,19 @@ export const createDb = (databasePath: string): Database => {
 
   // Sports schema is created separately to avoid startup failures on partially-migrated DBs.
   try {
+    const hasTable = (tableName: string): boolean => {
+      const row = db.query<{ name: string }, [string]>(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1
+      `).get(tableName);
+      return !!row;
+    };
+
+    if (!hasTable('sport_sessions')) {
+      db.exec(`DROP TABLE IF EXISTS archery_arrows`);
+      db.exec(`DROP TABLE IF EXISTS archery_ends`);
+      db.exec(`DROP TABLE IF EXISTS archery_rounds`);
+    }
+
     db.exec(`
       CREATE TABLE IF NOT EXISTS sport_sessions (
         id TEXT PRIMARY KEY,
@@ -279,11 +292,10 @@ export const createDb = (databasePath: string): Database => {
         archery_data_json TEXT,
         created_at_ms INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS sport_sessions_user_idx ON sport_sessions (uid, started_at_ms);
-      CREATE INDEX IF NOT EXISTS sport_sessions_type_idx ON sport_sessions (uid, sport_type, started_at_ms);
+      )
     `);
+    db.exec(`CREATE INDEX IF NOT EXISTS sport_sessions_user_idx ON sport_sessions (uid, started_at_ms)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS sport_sessions_type_idx ON sport_sessions (uid, sport_type, started_at_ms)`);
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS archery_rounds (
@@ -297,10 +309,9 @@ export const createDb = (databasePath: string): Database => {
         created_at_ms INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sport_sessions(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS archery_rounds_session_idx ON archery_rounds (session_id, order_index);
+      )
     `);
+    db.exec(`CREATE INDEX IF NOT EXISTS archery_rounds_session_idx ON archery_rounds (session_id, order_index)`);
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS archery_ends (
@@ -311,10 +322,9 @@ export const createDb = (databasePath: string): Database => {
         gold_count INTEGER NOT NULL DEFAULT 0,
         created_at_ms INTEGER NOT NULL,
         FOREIGN KEY (round_id) REFERENCES archery_rounds(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS archery_ends_round_idx ON archery_ends (round_id, end_number);
+      )
     `);
+    db.exec(`CREATE INDEX IF NOT EXISTS archery_ends_round_idx ON archery_ends (round_id, end_number)`);
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS archery_arrows (
@@ -325,10 +335,9 @@ export const createDb = (databasePath: string): Database => {
         arrow_order INTEGER NOT NULL,
         timestamp_ms INTEGER NOT NULL,
         FOREIGN KEY (end_id) REFERENCES archery_ends(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS archery_arrows_end_idx ON archery_arrows (end_id, arrow_order);
+      )
     `);
+    db.exec(`CREATE INDEX IF NOT EXISTS archery_arrows_end_idx ON archery_arrows (end_id, arrow_order)`);
   } catch (error) {
     console.error(JSON.stringify({
       level: 'error',
