@@ -1,15 +1,26 @@
-FROM oven/bun:1.1.38
+FROM oven/bun:1.1.38-alpine
 
 WORKDIR /app
+
+RUN addgroup -g 1001 -S bunuser && \
+    adduser -S -D -H -u 1001 -h /app -s /sbin/nologin -G bunuser -g bunuser bunuser
 
 COPY package.json bun.lock tsconfig.json ./
 
 ENV NODE_ENV=production
-RUN bun install --frozen-lockfile --production
+RUN bun install --frozen-lockfile --production --no-cache && \
+    chown -R bunuser:bunuser /app
 
 COPY src ./src
+RUN chown -R bunuser:bunuser /app
+
 ENV PORT=3000
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
+USER bunuser
 
 CMD ["bun", "src/app/server.ts"]
