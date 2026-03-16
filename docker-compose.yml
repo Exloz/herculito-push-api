@@ -3,7 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: herculito-push-api
     restart: unless-stopped
     environment:
       NODE_ENV: production
