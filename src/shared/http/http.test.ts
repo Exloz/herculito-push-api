@@ -193,7 +193,7 @@ describe('corsPreflight', () => {
     
     expect(response.status).toBe(204);
     expect(response.headers.get('access-control-allow-origin')).toBe('https://example.com');
-    expect(response.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
+    expect(response.headers.get('access-control-allow-methods')).toBe('GET,POST,PUT,DELETE,OPTIONS');
     expect(response.headers.get('access-control-allow-headers')).toBe('content-type,authorization');
     expect(response.headers.get('access-control-max-age')).toBe('600');
   });
@@ -209,6 +209,6 @@ describe('corsPreflight', () => {
     
     expect(response.status).toBe(204);
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
-    expect(response.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
+    expect(response.headers.get('access-control-allow-methods')).toBe('GET,POST,PUT,DELETE,OPTIONS');
   });
 });
