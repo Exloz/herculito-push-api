@@ -152,6 +152,7 @@ export const createDb = (databasePath: string): Database => {
       display_name TEXT,
       sets INTEGER NOT NULL,
       reps INTEGER NOT NULL,
+      reps_by_set_json TEXT,
       rest_time_s INTEGER,
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
@@ -260,6 +261,22 @@ export const createDb = (databasePath: string): Database => {
       level: 'warn',
       event: 'db_migration_warning',
       migration: 'jobs_requested_at',
+      error: error instanceof Error ? error.message : String(error)
+    }));
+  }
+
+  // Best-effort migration: add reps_by_set_json column to routine_exercises for reps-by-set feature.
+  try {
+    const columns = db.query<{ name: string }, []>(`PRAGMA table_info(routine_exercises)`).all();
+    const hasRepsBySet = columns.some((col) => col.name === 'reps_by_set_json');
+    if (!hasRepsBySet) {
+      db.exec(`ALTER TABLE routine_exercises ADD COLUMN reps_by_set_json TEXT;`);
+    }
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: 'warn',
+      event: 'db_migration_warning',
+      migration: 'routine_exercises_reps_by_set',
       error: error instanceof Error ? error.message : String(error)
     }));
   }

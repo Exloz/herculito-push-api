@@ -51,6 +51,7 @@ export type RoutineInput = {
     name: string;
     sets: number;
     reps: number;
+    repsBySet?: number[];
     restTime?: number;
     video?: ExerciseVideo;
   }>;
@@ -294,6 +295,28 @@ const toVideoJson = (video?: ExerciseVideo): string | null => {
     return JSON.stringify(video);
   } catch {
     return null;
+  }
+};
+
+const toRepsBySetJson = (repsBySet?: number[]): string | null => {
+  if (!repsBySet || repsBySet.length === 0) return null;
+  try {
+    return JSON.stringify(repsBySet);
+  } catch {
+    return null;
+  }
+};
+
+const parseRepsBySet = (json: string | null): number[] | undefined => {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json);
+    if (Array.isArray(parsed) && parsed.every((r) => typeof r === 'number')) {
+      return parsed;
+    }
+    return undefined;
+  } catch {
+    return undefined;
   }
 };
 
@@ -999,6 +1022,7 @@ export const listRoutines = (db: Database, uid: string, options?: { limit?: numb
     display_name: string | null;
     sets: number;
     reps: number;
+    reps_by_set_json: string | null;
     rest_time_s: number | null;
     name: string | null;
     video_json?: string | null;
@@ -1014,11 +1038,12 @@ export const listRoutines = (db: Database, uid: string, options?: { limit?: numb
       display_name: string | null;
       sets: number;
       reps: number;
+      reps_by_set_json: string | null;
       rest_time_s: number | null;
       name: string | null;
       video_json?: string | null;
     }, string[]>(`
-      SELECT re.routine_id, re.exercise_id, re.display_name, re.sets, re.reps, re.rest_time_s, e.name${includeVideos ? ', e.video_json' : ''}
+      SELECT re.routine_id, re.exercise_id, re.display_name, re.sets, re.reps, re.reps_by_set_json, re.rest_time_s, e.name${includeVideos ? ', e.video_json' : ''}
       FROM routine_exercises re
       LEFT JOIN exercises e ON e.id = re.exercise_id
       WHERE re.routine_id IN (${placeholders})
@@ -1031,11 +1056,13 @@ export const listRoutines = (db: Database, uid: string, options?: { limit?: numb
   exercises.forEach((exercise) => {
     const list = exercisesByRoutine.get(exercise.routine_id) ?? [];
     const name = exercise.display_name ?? exercise.name ?? exercise.exercise_id;
+    const repsBySet = parseRepsBySet(exercise.reps_by_set_json);
     list.push({
       id: exercise.exercise_id,
       name,
       sets: exercise.sets,
       reps: exercise.reps,
+      repsBySet,
       restTime: exercise.rest_time_s ?? undefined,
       video: includeVideos ? safeJsonParse<ExerciseVideo>(exercise.video_json ?? null) : undefined
     });
@@ -1107,10 +1134,11 @@ export const createRoutine = (db: Database, uid: string, input: RoutineInput): R
         display_name,
         sets,
         reps,
+        reps_by_set_json,
         rest_time_s,
         created_at_ms,
         updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     input.exercises.forEach((exercise, index) => {
@@ -1123,6 +1151,7 @@ export const createRoutine = (db: Database, uid: string, input: RoutineInput): R
         exercise.name,
         exercise.sets,
         exercise.reps,
+        toRepsBySetJson(exercise.repsBySet),
         exercise.restTime ?? null,
         now,
         now
@@ -1210,10 +1239,11 @@ export const updateRoutine = (db: Database, uid: string, routineId: string, upda
           display_name,
           sets,
           reps,
+          reps_by_set_json,
           rest_time_s,
           created_at_ms,
           updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       updates.exercises.forEach((exercise, index) => {
         const routineExerciseId = globalThis.crypto?.randomUUID?.() ?? `${routineId}_${index}_${Math.random().toString(16).slice(2)}`;
@@ -1225,6 +1255,7 @@ export const updateRoutine = (db: Database, uid: string, routineId: string, upda
           exercise.name,
           exercise.sets,
           exercise.reps,
+          toRepsBySetJson(exercise.repsBySet),
           exercise.restTime ?? null,
           now,
           now
@@ -1900,10 +1931,18 @@ export const updateSessionProgress = (db: Database, uid: string, sessionId: stri
   `).run(JSON.stringify(exercises ?? []), now, now, sessionId, uid);
 };
 
-export const completeSession = (db: Database, uid: string, sessionId: string, exercises: unknown[], completedAtMs: number, totalDurationMin: number): void => {
+export const completeSession = (
+  db: Database,
+  uid: string,
+  sessionId: string,
+  exercises: unknown[],
+  completedAtMs: number,
+  totalDurationMin: number,
+  repsBySetUpdates?: Record<string, number[]>
+): void => {
   const now = Date.now();
-  const session = db.query<{ started_at_ms: number }, [string, string]>(`
-    SELECT started_at_ms
+  const session = db.query<{ started_at_ms: number; routine_id: string | null }, [string, string]>(`
+    SELECT started_at_ms, routine_id
     FROM workout_sessions
     WHERE id = ? AND uid = ?
     LIMIT 1
@@ -1925,6 +1964,62 @@ export const completeSession = (db: Database, uid: string, sessionId: string, ex
     SET exercises_json = ?, completed_at_ms = ?, total_duration_min = ?, updated_at_ms = ?
     WHERE id = ? AND uid = ?
   `).run(JSON.stringify(exercises ?? []), safeCompletedAtMs, safeDurationMin, now, sessionId, uid);
+
+  // Apply reps-by-set updates to the routine ONLY if the user owns the routine
+  // Security: prevent mutation of public/other users' routines
+  if (repsBySetUpdates && session.routine_id && Object.keys(repsBySetUpdates).length > 0) {
+    try {
+      // Verify the routine belongs to this user before applying updates
+      const routineOwner = db.query<{ owner_uid: string }, [string]>(`
+        SELECT owner_uid FROM routines WHERE id = ? LIMIT 1
+      `).get(session.routine_id);
+
+      if (routineOwner && routineOwner.owner_uid === uid) {
+        const run = db.transaction(() => {
+          let appliedUpdates = 0;
+          for (const [exerciseId, repsBySet] of Object.entries(repsBySetUpdates)) {
+            if (!Array.isArray(repsBySet) || repsBySet.length === 0) continue;
+
+            const routineExercise = db.query<{ sets: number }, [string, string]>(`
+              SELECT sets
+              FROM routine_exercises
+              WHERE routine_id = ? AND exercise_id = ?
+              LIMIT 1
+            `).get(session.routine_id!, exerciseId);
+
+            if (!routineExercise || routineExercise.sets !== repsBySet.length) {
+              continue;
+            }
+
+            const repsBySetJson = JSON.stringify(repsBySet);
+            db.query(`
+              UPDATE routine_exercises
+              SET reps_by_set_json = ?, updated_at_ms = ?
+              WHERE routine_id = ? AND exercise_id = ?
+            `).run(repsBySetJson, now, session.routine_id, exerciseId);
+            appliedUpdates += 1;
+          }
+
+          if (appliedUpdates > 0) {
+            db.query(`
+              UPDATE routines
+              SET updated_at_ms = ?
+              WHERE id = ? AND owner_uid = ?
+            `).run(now, session.routine_id, uid);
+          }
+        });
+        run();
+      }
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'warn',
+        event: 'routine_reps_by_set_update_failed',
+        sessionId,
+        routineId: session.routine_id,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    }
+  }
 };
 
 export const upsertExerciseLog = (db: Database, uid: string, input: ExerciseLogInput): void => {

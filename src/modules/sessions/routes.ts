@@ -14,6 +14,7 @@ import {
   isValidDateKey,
   isValidLimitParam,
   isValidNumber,
+  isValidRepsBySetUpdates,
   isValidSessionExercisesPayload,
   isValidSetsPayload,
   sanitizeCompletedAtMs,
@@ -33,6 +34,7 @@ type SessionCompleteBody = {
   exercises: unknown[];
   completedAt?: number;
   totalDuration?: number;
+  repsBySetUpdates?: Record<string, number[]>; // exerciseId -> final repsBySet to persist to routine
 };
 
 type ExerciseLogBody = {
@@ -109,11 +111,17 @@ export const handleSessionRoutes: AppRouteHandler = async (req, url, context, me
       return withCors(req, json({ error: 'invalid_session' }, { status: 400 }), context.env.allowedOrigins);
     }
 
+    // Validate repsBySetUpdates if provided
+    const repsBySetUpdates = body.repsBySetUpdates;
+    if (repsBySetUpdates !== undefined && !isValidRepsBySetUpdates(repsBySetUpdates)) {
+      return withCors(req, json({ error: 'invalid_reps_by_set_updates' }, { status: 400 }), context.env.allowedOrigins);
+    }
+
     const completedAt = sanitizeCompletedAtMs(body.completedAt);
     const totalDurationMin = isValidNumber(body.totalDuration)
       ? Math.min(24 * 60, Math.max(1, Math.round(body.totalDuration)))
       : 1;
-    completeSession(context.db, uid, body.sessionId, body.exercises, completedAt, totalDurationMin);
+    completeSession(context.db, uid, body.sessionId, body.exercises, completedAt, totalDurationMin, repsBySetUpdates);
     return withCors(req, json({ ok: true }), context.env.allowedOrigins);
   }
 

@@ -5,6 +5,8 @@ const MAX_COMPLETION_CLOCK_DRIFT_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSION_EXERCISES = 200;
 const MAX_EXERCISE_SETS = 100;
 const MAX_SET_WEIGHT = 5000;
+const MAX_SETS = 30; // aligns with frontend
+const MAX_REPS = 200; // aligns with frontend
 
 export const isNonEmptyString = (value: unknown): value is string => {
   return typeof value === 'string' && value.trim().length > 0;
@@ -95,6 +97,13 @@ export const isValidSetPayload = (value: unknown): boolean => {
     }
   }
 
+  // Optional reps per set - validate if present (max 200 to align with frontend)
+  if (set.reps !== undefined) {
+    if (!isValidNumber(set.reps) || set.reps < 1 || set.reps > 200) {
+      return false;
+    }
+  }
+
   if (set.completedAt !== undefined && set.completedAt !== null) {
     const completedAt = set.completedAt;
     if (typeof completedAt === 'number') {
@@ -131,19 +140,30 @@ export const isValidSessionExercisesPayload = (value: unknown): value is unknown
 
 export const isValidExerciseEntry = (
   value: unknown
-): value is { id: string; name: string; sets: number; reps: number; restTime?: number } => {
+): value is { id: string; name: string; sets: number; reps: number; repsBySet?: number[]; restTime?: number } => {
   if (!value || typeof value !== 'object') return false;
   const entry = value as Record<string, unknown>;
   if (!isNonEmptyString(entry.id) || !isNonEmptyString(entry.name)) return false;
-  if (!isValidIntegerInRange(entry.sets, 1, 20)) return false;
-  if (!isValidIntegerInRange(entry.reps, 1, 100)) return false;
+  if (!isValidIntegerInRange(entry.sets, 1, MAX_SETS)) return false;
+  if (!isValidIntegerInRange(entry.reps, 1, MAX_REPS)) return false;
+
+  // Optional repsBySet - validate format if present; must have exactly 'sets' elements
+  if (entry.repsBySet !== undefined) {
+    if (!Array.isArray(entry.repsBySet)) return false;
+    const setsCount = (entry.sets as number) || 0;
+    if (entry.repsBySet.length !== setsCount) return false;
+    for (const r of entry.repsBySet) {
+      if (!isValidIntegerInRange(r, 1, MAX_REPS)) return false;
+    }
+  }
+
   if (entry.restTime !== undefined && !isValidIntegerInRange(entry.restTime, 0, 3600)) return false;
   return true;
 };
 
 export const isValidExerciseList = (
   value: unknown
-): value is Array<{ id: string; name: string; sets: number; reps: number; restTime?: number }> => {
+): value is Array<{ id: string; name: string; sets: number; reps: number; repsBySet?: number[]; restTime?: number }> => {
   return Array.isArray(value) && value.every((entry) => isValidExerciseEntry(entry));
 };
 
@@ -156,4 +176,20 @@ export const isValidLimitParam = (
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) return defaultWhenInvalid;
   return Math.min(max, Math.floor(parsed));
+};
+
+// Validates reps-by-set updates payload: { [exerciseId]: number[] }
+export const isValidRepsBySetUpdates = (value: unknown): value is Record<string, number[]> => {
+  if (!value || typeof value !== 'object') return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  for (const [exerciseId, repsArray] of entries) {
+    if (!isNonEmptyString(exerciseId)) return false;
+    if (!Array.isArray(repsArray)) return false;
+    if (repsArray.length === 0) return false;
+    if (repsArray.length > MAX_SETS) return false;
+    for (const r of repsArray) {
+      if (!isValidIntegerInRange(r, 1, MAX_REPS)) return false;
+    }
+  }
+  return true;
 };

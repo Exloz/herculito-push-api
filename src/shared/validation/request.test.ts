@@ -18,6 +18,7 @@ import {
   isValidExerciseEntry,
   isValidExerciseList,
   isValidLimitParam,
+  isValidRepsBySetUpdates,
 } from './request';
 
 describe('isNonEmptyString', () => {
@@ -382,8 +383,8 @@ describe('isValidExerciseEntry', () => {
     expect(isValidExerciseEntry({ id: 'ex-123', name: '', sets: 3, reps: 10 })).toBe(false);
     expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 0, reps: 10 })).toBe(false);
     expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 3, reps: 0 })).toBe(false);
-    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 21, reps: 10 })).toBe(false);
-    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 3, reps: 101 })).toBe(false);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 31, reps: 10 })).toBe(false);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 3, reps: 201 })).toBe(false);
   });
 
   it('should return false for invalid restTime', () => {
@@ -436,5 +437,75 @@ describe('isValidLimitParam', () => {
 
   it('should return undefined for null', () => {
     expect(isValidLimitParam(null, 100, 20)).toBeUndefined();
+  });
+});
+
+describe('isValidSetPayload with reps field', () => {
+  it('should return true for valid set payload with reps', () => {
+    expect(isValidSetPayload({ setNumber: 1, weight: 100, completed: true, reps: 10 })).toBe(true);
+    expect(isValidSetPayload({ setNumber: 1, weight: 100, completed: true, reps: 12 })).toBe(true);
+    expect(isValidSetPayload({ setNumber: 1, weight: 100, completed: true, reps: 200 })).toBe(true);
+  });
+
+  it('should return false for invalid reps', () => {
+    expect(isValidSetPayload({ setNumber: 1, weight: 100, completed: true, reps: 0 })).toBe(false);
+    expect(isValidSetPayload({ setNumber: 1, weight: 100, completed: true, reps: 201 })).toBe(false);
+    expect(isValidSetPayload({ setNumber: 1, weight: 100, completed: true, reps: -1 })).toBe(false);
+  });
+});
+
+describe('isValidExerciseEntry with repsBySet', () => {
+  it('should return true for exercise entry with valid repsBySet matching sets count', () => {
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: [12, 10, 8, 6] })).toBe(true);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Squat', sets: 3, reps: 8, repsBySet: [10, 8, 6] })).toBe(true);
+  });
+
+  it('should return true without repsBySet (backward compatible)', () => {
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 3, reps: 10 })).toBe(true);
+  });
+
+  it('should return false for repsBySet with length different from sets', () => {
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: [12, 10] })).toBe(false);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: [12, 10, 8, 6, 4, 2] })).toBe(false);
+  });
+
+  it('should return false for invalid repsBySet', () => {
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: [] })).toBe(false);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: [0, 10, 8, 6] })).toBe(false);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: [12, 201, 8, 6] })).toBe(false);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 4, reps: 10, repsBySet: '12/10/8/6' })).toBe(false);
+  });
+
+  it('should return false for repsBySet exceeding max length', () => {
+    const tooLong = Array(31).fill(10);
+    expect(isValidExerciseEntry({ id: 'ex-123', name: 'Bench Press', sets: 31, reps: 10, repsBySet: tooLong })).toBe(false);
+  });
+});
+
+describe('isValidRepsBySetUpdates', () => {
+  it('should return true for valid reps-by-set updates', () => {
+    expect(isValidRepsBySetUpdates({ 'ex-1': [12, 10, 8], 'ex-2': [10, 8, 6] })).toBe(true);
+    expect(isValidRepsBySetUpdates({ 'ex-1': [10] })).toBe(true);
+  });
+
+  it('should return true for empty object', () => {
+    expect(isValidRepsBySetUpdates({})).toBe(true);
+  });
+
+  it('should return false for empty exercise ID string', () => {
+    expect(isValidRepsBySetUpdates({ '': [12, 10] })).toBe(false);
+  });
+
+  it('should return false for invalid reps arrays', () => {
+    expect(isValidRepsBySetUpdates({ 'ex-1': [] })).toBe(false);
+    expect(isValidRepsBySetUpdates({ 'ex-1': [0, 10] })).toBe(false);
+    expect(isValidRepsBySetUpdates({ 'ex-1': [12, 201] })).toBe(false);
+    expect(isValidRepsBySetUpdates({ 'ex-1': '12/10/8' })).toBe(false);
+    expect(isValidRepsBySetUpdates({ 'ex-1': [12, '10', 8] })).toBe(false);
+  });
+
+  it('should return false for non-objects', () => {
+    expect(isValidRepsBySetUpdates(null)).toBe(false);
+    expect(isValidRepsBySetUpdates('string')).toBe(false);
   });
 });
