@@ -33,7 +33,9 @@ services:
       start_period: 40s
     networks:
       - proxy
-    # Dokploy injects Traefik labels automatically for this service.
+    labels:
+      # Dokploy injects routers/services automatically, but Traefik still needs the shared network.
+      - traefik.docker.network=proxy
 
 networks:
   proxy:
