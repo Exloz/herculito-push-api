@@ -33,23 +33,7 @@ services:
       start_period: 40s
     networks:
       - proxy
-    labels:
-      - traefik.enable=true
-
-      - traefik.http.routers.herculito-push-api.rule=Host(`api.herculito.exloz.site`)
-      - traefik.http.routers.herculito-push-api.entrypoints=websecure
-      - traefik.http.routers.herculito-push-api.tls=true
-      - traefik.http.routers.herculito-push-api.tls.certresolver=letsencrypt
-
-      - traefik.http.routers.herculito-push-api-http.rule=Host(`api.herculito.exloz.site`)
-      - traefik.http.routers.herculito-push-api-http.entrypoints=web
-      - traefik.http.routers.herculito-push-api-http.middlewares=herculito-push-api-https-redirect
-      - traefik.http.middlewares.herculito-push-api-https-redirect.redirectscheme.scheme=https
-      - traefik.http.middlewares.herculito-push-api-https-redirect.redirectscheme.permanent=true
-
-      - traefik.http.services.herculito-push-api.loadbalancer.server.port=3000
-
-      - traefik.docker.network=proxy
+    # Dokploy injects Traefik labels automatically for this service.
 
 networks:
   proxy:
