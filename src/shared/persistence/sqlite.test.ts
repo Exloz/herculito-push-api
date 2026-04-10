@@ -6,6 +6,11 @@ import {
   getSubscription,
   deactivateSubscription,
   upsertUserProfile,
+  insertBodyMeasurement,
+  updateBodyMeasurement,
+  deleteBodyMeasurement,
+  listBodyMeasurements,
+  getBodyMeasurement,
   upsertJob,
   cancelRestJob,
   getDueJobs,
@@ -155,6 +160,144 @@ describe('SQLite Database', () => {
 
       expect(profile?.display_name).toBe('Updated User');
       expect(profile?.email).toBe('test@example.com'); // Should preserve old email
+    });
+  });
+
+  describe('Body Measurements', () => {
+    it('should create body measurement', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-1',
+        uid: 'user-123',
+        measuredAtMs: now,
+        weightKg: 75.5,
+        heightCm: 180,
+        bodyFatPercentage: 15,
+        waistCm: 85,
+        hipsCm: 95,
+        chestCm: 100,
+        armsCm: 35,
+        thighsCm: 55,
+        calvesCm: 38,
+        notes: 'Test measurement'
+      });
+
+      const measurement = getBodyMeasurement(db, 'measurement-1', 'user-123');
+      expect(measurement).not.toBeNull();
+      expect(measurement?.weightKg).toBe(75.5);
+      expect(measurement?.heightCm).toBe(180);
+      expect(measurement?.bodyFatPercentage).toBe(15);
+      expect(measurement?.waistCm).toBe(85);
+      expect(measurement?.notes).toBe('Test measurement');
+    });
+
+    it('should create measurement with optional fields null', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-2',
+        uid: 'user-123',
+        measuredAtMs: now,
+        weightKg: 70
+      });
+
+      const measurement = getBodyMeasurement(db, 'measurement-2', 'user-123');
+      expect(measurement).not.toBeNull();
+      expect(measurement?.weightKg).toBe(70);
+      expect(measurement?.heightCm).toBeNull();
+      expect(measurement?.bodyFatPercentage).toBeNull();
+    });
+
+    it('should list measurements ordered by measuredAt desc', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-3',
+        uid: 'user-123',
+        measuredAtMs: now - 1000
+      });
+      insertBodyMeasurement(db, {
+        id: 'measurement-4',
+        uid: 'user-123',
+        measuredAtMs: now
+      });
+
+      const measurements = listBodyMeasurements(db, 'user-123', 10);
+      expect(measurements.length).toBe(2);
+      expect(measurements[0].id).toBe('measurement-4'); // Most recent first
+      expect(measurements[1].id).toBe('measurement-3');
+    });
+
+    it('should update measurement', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-5',
+        uid: 'user-123',
+        measuredAtMs: now,
+        weightKg: 70
+      });
+
+      const updated = updateBodyMeasurement(db, {
+        id: 'measurement-5',
+        uid: 'user-123',
+        weightKg: 72.5,
+        notes: 'Updated'
+      });
+
+      expect(updated).toBe(true);
+
+      const measurement = getBodyMeasurement(db, 'measurement-5', 'user-123');
+      expect(measurement?.weightKg).toBe(72.5);
+      expect(measurement?.notes).toBe('Updated');
+    });
+
+    it('should not update measurement for different user', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-6',
+        uid: 'user-123',
+        measuredAtMs: now,
+        weightKg: 70
+      });
+
+      const updated = updateBodyMeasurement(db, {
+        id: 'measurement-6',
+        uid: 'user-456',
+        weightKg: 72.5
+      });
+
+      expect(updated).toBe(false);
+
+      const measurement = getBodyMeasurement(db, 'measurement-6', 'user-123');
+      expect(measurement?.weightKg).toBe(70); // Unchanged
+    });
+
+    it('should delete measurement', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-7',
+        uid: 'user-123',
+        measuredAtMs: now
+      });
+
+      const deleted = deleteBodyMeasurement(db, 'measurement-7', 'user-123');
+      expect(deleted).toBe(true);
+
+      const measurement = getBodyMeasurement(db, 'measurement-7', 'user-123');
+      expect(measurement).toBeNull();
+    });
+
+    it('should not delete measurement for different user', () => {
+      const now = Date.now();
+      insertBodyMeasurement(db, {
+        id: 'measurement-8',
+        uid: 'user-123',
+        measuredAtMs: now
+      });
+
+      const deleted = deleteBodyMeasurement(db, 'measurement-8', 'user-456');
+      expect(deleted).toBe(false);
+
+      const measurement = getBodyMeasurement(db, 'measurement-8', 'user-123');
+      expect(measurement).not.toBeNull();
     });
   });
 

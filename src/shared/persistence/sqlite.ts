@@ -214,6 +214,27 @@ export const createDb = (databasePath: string): Database => {
 
     CREATE INDEX IF NOT EXISTS workouts_uid_updated_idx ON workouts (uid, updated_at_ms DESC);
     CREATE INDEX IF NOT EXISTS user_profiles_updated_idx ON user_profiles (updated_at_ms DESC);
+
+    CREATE TABLE IF NOT EXISTS user_body_measurements (
+      id TEXT PRIMARY KEY,
+      uid TEXT NOT NULL,
+      measured_at_ms INTEGER NOT NULL,
+      weight_kg REAL,
+      height_cm REAL,
+      body_fat_percentage REAL,
+      waist_cm REAL,
+      hips_cm REAL,
+      chest_cm REAL,
+      arms_cm REAL,
+      thighs_cm REAL,
+      calves_cm REAL,
+      notes TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS body_measurements_user_idx ON user_body_measurements (uid, measured_at_ms DESC);
+    CREATE INDEX IF NOT EXISTS body_measurements_user_updated_idx ON user_body_measurements (uid, updated_at_ms DESC);
   `);
 
   // Best-effort migration: older deployments had workouts(id PK) without uid.
@@ -467,6 +488,182 @@ export const upsertUserProfile = (db: Database, args: {
       email = COALESCE(excluded.email, user_profiles.email),
       updated_at_ms = excluded.updated_at_ms
   `).run(args.uid, displayName, avatarUrl, email, now, now);
+};
+
+export interface BodyMeasurementRow {
+  id: string;
+  uid: string;
+  measuredAtMs: number;
+  weightKg: number | null;
+  heightCm: number | null;
+  bodyFatPercentage: number | null;
+  waistCm: number | null;
+  hipsCm: number | null;
+  chestCm: number | null;
+  armsCm: number | null;
+  thighsCm: number | null;
+  calvesCm: number | null;
+  notes: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export const insertBodyMeasurement = (db: Database, args: {
+  id: string;
+  uid: string;
+  measuredAtMs: number;
+  weightKg?: number | null;
+  heightCm?: number | null;
+  bodyFatPercentage?: number | null;
+  waistCm?: number | null;
+  hipsCm?: number | null;
+  chestCm?: number | null;
+  armsCm?: number | null;
+  thighsCm?: number | null;
+  calvesCm?: number | null;
+  notes?: string | null;
+}): void => {
+  const now = Date.now();
+  const notes = typeof args.notes === 'string' && args.notes.trim().length > 0
+    ? args.notes.trim()
+    : null;
+
+  db.query(`
+    INSERT INTO user_body_measurements (
+      id, uid, measured_at_ms, weight_kg, height_cm, body_fat_percentage,
+      waist_cm, hips_cm, chest_cm, arms_cm, thighs_cm, calves_cm, notes,
+      created_at_ms, updated_at_ms
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    args.id,
+    args.uid,
+    args.measuredAtMs,
+    args.weightKg ?? null,
+    args.heightCm ?? null,
+    args.bodyFatPercentage ?? null,
+    args.waistCm ?? null,
+    args.hipsCm ?? null,
+    args.chestCm ?? null,
+    args.armsCm ?? null,
+    args.thighsCm ?? null,
+    args.calvesCm ?? null,
+    notes,
+    now,
+    now
+  );
+};
+
+export const updateBodyMeasurement = (db: Database, args: {
+  id: string;
+  uid: string;
+  measuredAtMs?: number;
+  weightKg?: number | null;
+  heightCm?: number | null;
+  bodyFatPercentage?: number | null;
+  waistCm?: number | null;
+  hipsCm?: number | null;
+  chestCm?: number | null;
+  armsCm?: number | null;
+  thighsCm?: number | null;
+  calvesCm?: number | null;
+  notes?: string | null;
+}): boolean => {
+  const now = Date.now();
+  const notes = typeof args.notes === 'string' && args.notes.trim().length > 0
+    ? args.notes.trim()
+    : null;
+
+  const result = db.query(`
+    UPDATE user_body_measurements
+    SET measured_at_ms = COALESCE(?, measured_at_ms),
+        weight_kg = ?,
+        height_cm = ?,
+        body_fat_percentage = ?,
+        waist_cm = ?,
+        hips_cm = ?,
+        chest_cm = ?,
+        arms_cm = ?,
+        thighs_cm = ?,
+        calves_cm = ?,
+        notes = ?,
+        updated_at_ms = ?
+    WHERE id = ? AND uid = ?
+  `).run(
+    args.measuredAtMs ?? null,
+    args.weightKg ?? null,
+    args.heightCm ?? null,
+    args.bodyFatPercentage ?? null,
+    args.waistCm ?? null,
+    args.hipsCm ?? null,
+    args.chestCm ?? null,
+    args.armsCm ?? null,
+    args.thighsCm ?? null,
+    args.calvesCm ?? null,
+    notes,
+    now,
+    args.id,
+    args.uid
+  );
+
+  return Number(result.changes ?? 0) > 0;
+};
+
+export const deleteBodyMeasurement = (db: Database, id: string, uid: string): boolean => {
+  const result = db.query(`
+    DELETE FROM user_body_measurements WHERE id = ? AND uid = ?
+  `).run(id, uid);
+
+  return Number(result.changes ?? 0) > 0;
+};
+
+export const listBodyMeasurements = (db: Database, uid: string, limit: number): BodyMeasurementRow[] => {
+  return db.query<BodyMeasurementRow, [string, number]>(`
+    SELECT
+      id,
+      uid,
+      measured_at_ms as measuredAtMs,
+      weight_kg as weightKg,
+      height_cm as heightCm,
+      body_fat_percentage as bodyFatPercentage,
+      waist_cm as waistCm,
+      hips_cm as hipsCm,
+      chest_cm as chestCm,
+      arms_cm as armsCm,
+      thighs_cm as thighsCm,
+      calves_cm as calvesCm,
+      notes,
+      created_at_ms as createdAtMs,
+      updated_at_ms as updatedAtMs
+    FROM user_body_measurements
+    WHERE uid = ?
+    ORDER BY measured_at_ms DESC
+    LIMIT ?
+  `).all(uid, limit);
+};
+
+export const getBodyMeasurement = (db: Database, id: string, uid: string): BodyMeasurementRow | null => {
+  return db.query<BodyMeasurementRow, [string, string]>(`
+    SELECT
+      id,
+      uid,
+      measured_at_ms as measuredAtMs,
+      weight_kg as weightKg,
+      height_cm as heightCm,
+      body_fat_percentage as bodyFatPercentage,
+      waist_cm as waistCm,
+      hips_cm as hipsCm,
+      chest_cm as chestCm,
+      arms_cm as armsCm,
+      thighs_cm as thighsCm,
+      calves_cm as calvesCm,
+      notes,
+      created_at_ms as createdAtMs,
+      updated_at_ms as updatedAtMs
+    FROM user_body_measurements
+    WHERE id = ? AND uid = ?
+    LIMIT 1
+  `).get(id, uid);
 };
 
 export const upsertJob = (db: Database, args: {

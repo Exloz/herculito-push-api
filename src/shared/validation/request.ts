@@ -193,3 +193,109 @@ export const isValidRepsBySetUpdates = (value: unknown): value is Record<string,
   }
   return true;
 };
+
+// Body measurements validation constants
+const MAX_BODY_WEIGHT_KG = 500;
+const MAX_HEIGHT_CM = 300;
+const MAX_BODY_FAT_PERCENTAGE = 100;
+const MAX_BODY_MEASUREMENT_CM = 500;
+const MAX_MEASUREMENT_NOTES_LENGTH = 500;
+
+export const isValidMeasurementValue = (value: unknown): value is number => {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+};
+
+export const sanitizeOptionalMeasurement = (
+  value: unknown,
+  maxValue: number
+): number | null => {
+  if (value === null || value === undefined) return null;
+  if (!isValidMeasurementValue(value)) return null;
+  if (value > maxValue) return maxValue;
+  if (value < 0) return 0;
+  return value;
+};
+
+export const isValidMeasurementNotes = (value: unknown): value is string | null => {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== 'string') return false;
+  return value.length <= MAX_MEASUREMENT_NOTES_LENGTH;
+};
+
+export const isValidMeasuredAtMs = (value: unknown): value is number => {
+  if (!isValidNumber(value) || value <= 0) return false;
+  const now = Date.now();
+  const timestamp = Math.floor(value);
+  // Allow up to 1 day in the future (for timezone differences)
+  if (timestamp > now + 24 * 60 * 60 * 1000) return false;
+  // Don't allow measurements from before 2020
+  if (timestamp < new Date('2020-01-01').getTime()) return false;
+  return true;
+};
+
+export interface BodyMeasurementInput {
+  id?: string;
+  measuredAt?: number;
+  weightKg?: number | null;
+  heightCm?: number | null;
+  bodyFatPercentage?: number | null;
+  waistCm?: number | null;
+  hipsCm?: number | null;
+  chestCm?: number | null;
+  armsCm?: number | null;
+  thighsCm?: number | null;
+  calvesCm?: number | null;
+  notes?: string | null;
+}
+
+export const sanitizeBodyMeasurementInput = (body: unknown): BodyMeasurementInput | null => {
+  if (!body || typeof body !== 'object') return null;
+
+  const input = body as Record<string, unknown>;
+
+  // measuredAt is required
+  if (!isValidMeasuredAtMs(input.measuredAt)) return null;
+
+  const result: BodyMeasurementInput = {
+    measuredAt: Math.floor(input.measuredAt),
+  };
+
+  // Optional fields
+  if (input.id !== undefined && isNonEmptyString(input.id)) {
+    result.id = input.id;
+  }
+
+  if (input.weightKg !== undefined) {
+    result.weightKg = sanitizeOptionalMeasurement(input.weightKg, MAX_BODY_WEIGHT_KG);
+  }
+  if (input.heightCm !== undefined) {
+    result.heightCm = sanitizeOptionalMeasurement(input.heightCm, MAX_HEIGHT_CM);
+  }
+  if (input.bodyFatPercentage !== undefined) {
+    result.bodyFatPercentage = sanitizeOptionalMeasurement(input.bodyFatPercentage, MAX_BODY_FAT_PERCENTAGE);
+  }
+  if (input.waistCm !== undefined) {
+    result.waistCm = sanitizeOptionalMeasurement(input.waistCm, MAX_BODY_MEASUREMENT_CM);
+  }
+  if (input.hipsCm !== undefined) {
+    result.hipsCm = sanitizeOptionalMeasurement(input.hipsCm, MAX_BODY_MEASUREMENT_CM);
+  }
+  if (input.chestCm !== undefined) {
+    result.chestCm = sanitizeOptionalMeasurement(input.chestCm, MAX_BODY_MEASUREMENT_CM);
+  }
+  if (input.armsCm !== undefined) {
+    result.armsCm = sanitizeOptionalMeasurement(input.armsCm, MAX_BODY_MEASUREMENT_CM);
+  }
+  if (input.thighsCm !== undefined) {
+    result.thighsCm = sanitizeOptionalMeasurement(input.thighsCm, MAX_BODY_MEASUREMENT_CM);
+  }
+  if (input.calvesCm !== undefined) {
+    result.calvesCm = sanitizeOptionalMeasurement(input.calvesCm, MAX_BODY_MEASUREMENT_CM);
+  }
+  if (input.notes !== undefined) {
+    const notes = typeof input.notes === 'string' ? input.notes.trim() : null;
+    result.notes = notes && notes.length <= MAX_MEASUREMENT_NOTES_LENGTH ? notes : null;
+  }
+
+  return result;
+};
