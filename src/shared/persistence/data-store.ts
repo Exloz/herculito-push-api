@@ -342,19 +342,10 @@ const getCompletedNonZeroWeights = (log: DashboardExerciseLogInput): number[] =>
 const APP_TIME_ZONE = 'America/Bogota';
 const FALLBACK_OFFSET_HOURS = -5;
 
-const getStartOfWeekMs = (referenceDate = new Date()): number => {
-  const startOfWeek = new Date(referenceDate);
-  const dayOfWeek = startOfWeek.getDay();
-  const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  startOfWeek.setDate(startOfWeek.getDate() - daysSinceMonday);
-  startOfWeek.setHours(0, 0, 0, 0);
-  return startOfWeek.getTime();
-};
-
-const getStartOfMonthMs = (referenceDate = new Date()): number => {
-  const startOfMonth = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1);
-  startOfMonth.setHours(0, 0, 0, 0);
-  return startOfMonth.getTime();
+const getDateKeyStartMsInAppTimeZone = (dateKey: string): number => {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const utcMidnightMs = Date.UTC(year, (month || 1) - 1, day || 1, 0, 0, 0, 0);
+  return utcMidnightMs - (FALLBACK_OFFSET_HOURS * 3600000);
 };
 
 const pad2 = (value: number): string => String(value).padStart(2, '0');
@@ -1386,9 +1377,11 @@ export const getCompetitiveLeaderboard = (
   limit = 10
 ): CompetitiveLeaderboardOutput => {
   const safeLimit = Math.min(50, Math.max(1, Math.floor(limit)));
-  const now = new Date();
-  const weekStartMs = getStartOfWeekMs(now);
-  const monthStartMs = getStartOfMonthMs(now);
+  const currentDateKey = getDateKeyInAppTimeZone(Date.now());
+  const weekStartDateKey = getStartOfWeekDateKey(currentDateKey);
+  const monthStartDateKey = getStartOfMonthDateKey(currentDateKey);
+  const weekStartMs = getDateKeyStartMsInAppTimeZone(weekStartDateKey);
+  const monthStartMs = getDateKeyStartMsInAppTimeZone(monthStartDateKey);
 
   return {
     week: listLeaderboardByPeriod(db, requesterUid, weekStartMs, safeLimit),
