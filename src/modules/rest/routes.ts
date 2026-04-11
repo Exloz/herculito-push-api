@@ -15,6 +15,7 @@ type ScheduleBody = {
   title?: string;
   body?: string;
   url?: string;
+  tag?: string;
 };
 
 type CancelBody = {
@@ -46,7 +47,7 @@ export const handleRestRoutes: AppRouteHandler = async (req, url, context, meta)
       title: isNonEmptyString(body.title) ? body.title : '¡Descanso terminado!',
       body: isNonEmptyString(body.body) ? body.body : 'Continúa con tu entrenamiento.',
       url: isNonEmptyString(body.url) ? body.url : 'https://herculito.exloz.site',
-      tag: 'rest-timer'
+      tag: isNonEmptyString(body.tag) ? body.tag : 'rest-timer'
     };
 
     const jobId = makeRestJobId(uid, body.deviceId);

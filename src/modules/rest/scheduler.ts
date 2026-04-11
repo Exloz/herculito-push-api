@@ -53,6 +53,12 @@ export const startRestScheduler = (
           const subscriptionRow = getSubscription(db, job.uid, job.deviceId);
           if (!subscriptionRow || subscriptionRow.isActive !== 1) {
             markJobCanceled(db, job.id, job.requestedAtMs);
+            logInfo({
+              event: 'rest_job_canceled_missing_subscription',
+              jobId: job.id,
+              uid: job.uid,
+              deviceId: job.deviceId
+            });
             continue;
           }
 
@@ -72,6 +78,13 @@ export const startRestScheduler = (
 
           await sendPush(subscription, payload);
           markJobSent(db, job.id, job.requestedAtMs);
+          logInfo({
+            event: 'rest_job_sent',
+            jobId: job.id,
+            uid: job.uid,
+            deviceId: job.deviceId,
+            attempts: job.attempts
+          });
         } catch (error) {
           const err = error as { statusCode?: number } | undefined;
           const statusCode = typeof err?.statusCode === 'number' ? err.statusCode : undefined;
@@ -79,14 +92,39 @@ export const startRestScheduler = (
           if (statusCode === 404 || statusCode === 410) {
             deactivateSubscription(db, job.uid, job.deviceId);
             markJobCanceled(db, job.id, job.requestedAtMs);
+            logInfo({
+              event: 'rest_job_canceled_subscription_gone',
+              jobId: job.id,
+              uid: job.uid,
+              deviceId: job.deviceId,
+              statusCode
+            });
             continue;
           }
 
           const nextAttempts = job.attempts + 1;
           if (nextAttempts <= 3) {
-            rescheduleJob(db, job.id, job.requestedAtMs, Date.now() + getRetryDelayMs(nextAttempts), nextAttempts);
+            const nextExecuteAtMs = Date.now() + getRetryDelayMs(nextAttempts);
+            rescheduleJob(db, job.id, job.requestedAtMs, nextExecuteAtMs, nextAttempts);
+            logInfo({
+              event: 'rest_job_rescheduled',
+              jobId: job.id,
+              uid: job.uid,
+              deviceId: job.deviceId,
+              nextAttempts,
+              nextExecuteAtMs,
+              ...toErrorDetails(error)
+            });
           } else {
             markJobFailed(db, job.id, job.requestedAtMs);
+            logError({
+              event: 'rest_job_failed',
+              jobId: job.id,
+              uid: job.uid,
+              deviceId: job.deviceId,
+              attempts: nextAttempts,
+              ...toErrorDetails(error)
+            });
           }
         }
 
