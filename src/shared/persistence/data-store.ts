@@ -2086,7 +2086,7 @@ export const upsertWorkout = (db: Database, uid: string, workout: WorkoutInput):
 
 // ===== SPORTS MODULE =====
 
-export type SportType = 'archery';
+export type SportType = 'archery' | 'hiit';
 
 export type ArcheryArrowInput = {
   score: number;
@@ -2103,6 +2103,13 @@ export type ArcheryRoundInput = {
   arrowsPerEnd: number;
 };
 
+export type HiitConfigInput = {
+  intervals: number;
+  workDuration: number;
+  restEnabled: boolean;
+  restDuration: number;
+};
+
 export type SportSessionInput = {
   sportType: SportType;
   location?: string;
@@ -2111,6 +2118,7 @@ export type SportSessionInput = {
     bowType: string;
     arrowsUsed: number;
   };
+  hiitConfig?: HiitConfigInput;
 };
 
 export type ArcheryArrowOutput = {
@@ -2138,6 +2146,15 @@ export type ArcheryRoundOutput = {
   totalScore: number;
 };
 
+export type HiitSessionDataOutput = {
+  intervals: number;
+  workDuration: number;
+  restEnabled: boolean;
+  restDuration: number;
+  totalWorkTime: number;
+  totalRestTime: number;
+};
+
 export type SportSessionOutput = {
   id: string;
   userId: string;
@@ -2156,6 +2173,7 @@ export type SportSessionOutput = {
     maxPossibleScore: number;
     averageArrow: number;
   };
+  hiitData?: HiitSessionDataOutput;
 };
 
 export const startSportSession = (
@@ -2176,6 +2194,27 @@ export const startSportSession = (
     }
     : undefined;
 
+  const hiitData = input.sportType === 'hiit' && input.hiitConfig
+    ? {
+      intervals: input.hiitConfig.intervals,
+      workDuration: input.hiitConfig.workDuration,
+      restEnabled: input.hiitConfig.restEnabled,
+      restDuration: input.hiitConfig.restDuration,
+      totalWorkTime: input.hiitConfig.intervals * input.hiitConfig.workDuration,
+      totalRestTime: input.hiitConfig.restEnabled
+        ? Math.max(0, input.hiitConfig.intervals - 1) * input.hiitConfig.restDuration
+        : 0
+    }
+    : undefined;
+
+  // Store sport-specific data in archery_data_json column for backward compatibility
+  // For HIIT, we store hiitData there temporarily until a migration adds a dedicated column
+  const sportDataJson = archeryData
+    ? JSON.stringify({ archery: archeryData })
+    : hiitData
+      ? JSON.stringify({ hiit: hiitData })
+      : null;
+
   db.query(`
     INSERT INTO sport_sessions (
       id, uid, sport_type, location, notes, started_at_ms, status,
@@ -2190,21 +2229,30 @@ export const startSportSession = (
     input.notes ?? null,
     now,
     'active',
-    archeryData ? JSON.stringify(archeryData) : null,
+    sportDataJson,
     now,
     now
   );
+
+  const getSportName = (type: SportType): string => {
+    switch (type) {
+      case 'archery': return 'Tiro con Arco';
+      case 'hiit': return 'HIIT';
+      default: return type;
+    }
+  };
 
   return {
     id: sessionId,
     userId: uid,
     sportType: input.sportType,
-    sportName: input.sportType === 'archery' ? 'Tiro con Arco' : input.sportType,
+    sportName: getSportName(input.sportType),
     location: input.location,
     notes: input.notes,
     startedAt: now,
     status: 'active',
-    archeryData
+    archeryData,
+    hiitData
   };
 };
 
@@ -2347,25 +2395,23 @@ const updateArcherySessionStats = (db: Database, sessionId: string): void => {
   `).get(sessionId);
 
   if (session?.archery_data_json) {
-    const existingData = safeJsonParse<{
-      bowType: string;
-      arrowsUsed: number;
-    }>(session.archery_data_json);
+    const sportData = parseSportDataJson(session.archery_data_json);
+    const existingArcheryData = sportData.archery;
 
     const updatedData = {
-      bowType: existingData?.bowType ?? 'recurve',
-      arrowsUsed: existingData?.arrowsUsed ?? 0,
+      bowType: existingArcheryData?.bowType ?? 'recurve',
+      arrowsUsed: existingArcheryData?.arrowsUsed ?? 0,
       totalScore: stats.totalScore,
       maxPossibleScore: stats.maxPossible,
       averageArrow: Math.round(averageArrow * 100) / 100,
-      goldCount: stats.goldCount
+      goldCount: stats.goldCount,
     };
 
     db.query(`
       UPDATE sport_sessions
       SET archery_data_json = ?, updated_at_ms = ?
       WHERE id = ?
-    `).run(JSON.stringify(updatedData), now, sessionId);
+    `).run(JSON.stringify({ archery: updatedData }), now, sessionId);
   }
 };
 
@@ -2382,6 +2428,58 @@ export const completeSportSession = (
     SET status = ?, completed_at_ms = ?, notes = COALESCE(?, notes), updated_at_ms = ?
     WHERE id = ? AND uid = ?
   `).run('completed', now, notes ?? null, now, sessionId, uid);
+};
+
+const getSportName = (type: SportType): string => {
+  switch (type) {
+    case 'archery': return 'Tiro con Arco';
+    case 'hiit': return 'HIIT';
+    default: return type;
+  }
+};
+
+type ArcheryMetaJson = {
+  bowType: string;
+  arrowsUsed: number;
+  totalScore: number;
+  maxPossibleScore: number;
+  averageArrow: number;
+  goldCount?: number;
+};
+
+type HiitMetaJson = {
+  intervals: number;
+  workDuration: number;
+  restEnabled: boolean;
+  restDuration: number;
+  totalWorkTime: number;
+  totalRestTime: number;
+};
+
+type SportDataJson = {
+  archery?: ArcheryMetaJson;
+  hiit?: HiitMetaJson;
+} | ArcheryMetaJson; // Legacy format (raw archery data without wrapper)
+
+const parseSportDataJson = (json: string): { archery?: ArcheryMetaJson; hiit?: HiitMetaJson } => {
+  const parsed = safeJsonParse<ArcheryMetaJson | SportDataJson>(json);
+  if (!parsed) return {};
+
+  // Legacy format: raw archery data without wrapper
+  if ('bowType' in parsed && !('archery' in parsed) && !('hiit' in parsed)) {
+    return { archery: parsed as ArcheryMetaJson };
+  }
+
+  // New format: wrapped in { archery: ... } or { hiit: ... }
+  const wrapped = parsed as SportDataJson;
+  if ('archery' in wrapped || 'hiit' in wrapped) {
+    return {
+      archery: (wrapped as { archery?: ArcheryMetaJson }).archery,
+      hiit: (wrapped as { hiit?: HiitMetaJson }).hiit,
+    };
+  }
+
+  return {};
 };
 
 export const listSportSessions = (
@@ -2438,34 +2536,35 @@ export const listSportSessions = (
   }, (string | number)[]>(query).all(...params);
 
   return rows.map((row) => {
-    const archeryData = row.archeryDataJson
-      ? safeJsonParse<{
-        bowType: string;
-        arrowsUsed: number;
-        totalScore: number;
-        maxPossibleScore: number;
-        averageArrow: number;
-        goldCount?: number;
-      }>(row.archeryDataJson)
-      : undefined;
+    const sportData = row.archeryDataJson
+      ? parseSportDataJson(row.archeryDataJson)
+      : {};
 
     return {
       id: row.id,
       userId: row.userId,
       sportType: row.sportType,
-      sportName: row.sportType === 'archery' ? 'Tiro con Arco' : row.sportType,
+      sportName: getSportName(row.sportType),
       location: row.location ?? undefined,
       notes: row.notes ?? undefined,
       startedAt: row.startedAt,
       completedAt: row.completedAt ?? undefined,
       status: row.status,
-      archeryData: archeryData ? {
-        bowType: archeryData.bowType,
-        arrowsUsed: archeryData.arrowsUsed,
-        rounds: [], // Rounds loaded separately if needed
-        totalScore: archeryData.totalScore ?? 0,
-        maxPossibleScore: archeryData.maxPossibleScore ?? 0,
-        averageArrow: archeryData.averageArrow ?? 0
+      archeryData: sportData.archery ? {
+        bowType: sportData.archery.bowType,
+        arrowsUsed: sportData.archery.arrowsUsed,
+        rounds: [],
+        totalScore: sportData.archery.totalScore ?? 0,
+        maxPossibleScore: sportData.archery.maxPossibleScore ?? 0,
+        averageArrow: sportData.archery.averageArrow ?? 0
+      } : undefined,
+      hiitData: sportData.hiit ? {
+        intervals: sportData.hiit.intervals,
+        workDuration: sportData.hiit.workDuration,
+        restEnabled: sportData.hiit.restEnabled,
+        restDuration: sportData.hiit.restDuration,
+        totalWorkTime: sportData.hiit.totalWorkTime,
+        totalRestTime: sportData.hiit.totalRestTime,
       } : undefined
     };
   });
@@ -2505,39 +2604,47 @@ export const getSportSessionWithDetails = (
 
   // Load archery rounds with ends and arrows
   let archeryData: SportSessionOutput['archeryData'];
+  let hiitData: SportSessionOutput['hiitData'];
 
-  if (session.sportType === 'archery' && session.archeryDataJson) {
-    const archeryMeta = safeJsonParse<{
-      bowType: string;
-      arrowsUsed: number;
-      totalScore: number;
-      maxPossibleScore: number;
-      averageArrow: number;
-    }>(session.archeryDataJson);
+  if (session.archeryDataJson) {
+    const sportData = parseSportDataJson(session.archeryDataJson);
 
-    const rounds = loadArcheryRounds(db, sessionId);
+    if (session.sportType === 'archery' && sportData.archery) {
+      const rounds = loadArcheryRounds(db, sessionId);
+      archeryData = {
+        bowType: sportData.archery.bowType ?? 'recurve',
+        arrowsUsed: sportData.archery.arrowsUsed ?? 0,
+        rounds,
+        totalScore: sportData.archery.totalScore ?? 0,
+        maxPossibleScore: sportData.archery.maxPossibleScore ?? 0,
+        averageArrow: sportData.archery.averageArrow ?? 0
+      };
+    }
 
-    archeryData = {
-      bowType: archeryMeta?.bowType ?? 'recurve',
-      arrowsUsed: archeryMeta?.arrowsUsed ?? 0,
-      rounds,
-      totalScore: archeryMeta?.totalScore ?? 0,
-      maxPossibleScore: archeryMeta?.maxPossibleScore ?? 0,
-      averageArrow: archeryMeta?.averageArrow ?? 0
-    };
+    if (session.sportType === 'hiit' && sportData.hiit) {
+      hiitData = {
+        intervals: sportData.hiit.intervals,
+        workDuration: sportData.hiit.workDuration,
+        restEnabled: sportData.hiit.restEnabled,
+        restDuration: sportData.hiit.restDuration,
+        totalWorkTime: sportData.hiit.totalWorkTime,
+        totalRestTime: sportData.hiit.totalRestTime,
+      };
+    }
   }
 
   return {
     id: session.id,
     userId: session.userId,
     sportType: session.sportType,
-    sportName: session.sportType === 'archery' ? 'Tiro con Arco' : session.sportType,
+    sportName: getSportName(session.sportType),
     location: session.location ?? undefined,
     notes: session.notes ?? undefined,
     startedAt: session.startedAt,
     completedAt: session.completedAt ?? undefined,
     status: session.status,
-    archeryData
+    archeryData,
+    hiitData
   };
 };
 

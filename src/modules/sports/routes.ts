@@ -72,12 +72,29 @@ export const handleSportsRoutes: AppRouteHandler = async (req, url, context, met
     const { uid } = await context.requireAuth(req, meta);
     const body = await getJsonBody<SportSessionInput>(req);
 
-    if (!body.sportType || body.sportType !== 'archery') {
+    if (!body.sportType || (body.sportType !== 'archery' && body.sportType !== 'hiit')) {
       return withCors(req, json({ error: 'invalid_sport_type' }, { status: 400 }), origins);
     }
 
     if (body.sportType === 'archery' && !body.archeryConfig?.bowType) {
       return withCors(req, json({ error: 'missing_bow_type' }, { status: 400 }), origins);
+    }
+
+    if (body.sportType === 'hiit' && !body.hiitConfig) {
+      return withCors(req, json({ error: 'missing_hiit_config' }, { status: 400 }), origins);
+    }
+
+    if (body.sportType === 'hiit' && body.hiitConfig) {
+      const cfg = body.hiitConfig;
+      if (typeof cfg.intervals !== 'number' || cfg.intervals < 1 || cfg.intervals > 50) {
+        return withCors(req, json({ error: 'invalid_intervals' }, { status: 400 }), origins);
+      }
+      if (typeof cfg.workDuration !== 'number' || cfg.workDuration < 5 || cfg.workDuration > 300) {
+        return withCors(req, json({ error: 'invalid_work_duration' }, { status: 400 }), origins);
+      }
+      if (cfg.restEnabled && (typeof cfg.restDuration !== 'number' || cfg.restDuration < 5 || cfg.restDuration > 120)) {
+        return withCors(req, json({ error: 'invalid_rest_duration' }, { status: 400 }), origins);
+      }
     }
 
     const session = startSportSession(context.db, uid, body);
