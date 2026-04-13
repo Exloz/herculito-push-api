@@ -2745,32 +2745,60 @@ export const getSportStats = (
   thisMonthSessions: number;
   currentStreak: number;
   longestStreak: number;
-  totalArrowsShot: number;
-  averageScore: number;
-  personalBest: number;
+  totalDuration: number;
+  totalArrowsShot?: number;
+  averageScore?: number;
+  personalBest?: number;
+  totalHiitIntervals?: number;
+  totalHiitWorkTime?: number;
 } => {
   const now = Date.now();
   const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const oneMonthAgo = now - 30 * 24 * 60 * 60 * 1000;
 
-  let query = `
+  // Archery data can be either legacy ($.arrowsUsed) or wrapped ($.archery.arrowsUsed)
+  // HIIT data is wrapped ($.hiit.intervals, $.hiit.totalWorkTime)
+  const query = `
     SELECT
       COUNT(*) as totalSessions,
       SUM(CASE WHEN completed_at_ms >= ? THEN 1 ELSE 0 END) as thisWeekSessions,
       SUM(CASE WHEN completed_at_ms >= ? THEN 1 ELSE 0 END) as thisMonthSessions,
-      COALESCE(SUM(CASE WHEN archery_data_json IS NOT NULL THEN
-        json_extract(archery_data_json, '$.arrowsUsed') ELSE 0 END), 0) as totalArrowsShot,
-      COALESCE(AVG(CASE WHEN archery_data_json IS NOT NULL THEN
-        json_extract(archery_data_json, '$.averageArrow') ELSE NULL END), 0) as averageScore,
-      COALESCE(MAX(CASE WHEN archery_data_json IS NOT NULL THEN
-        json_extract(archery_data_json, '$.totalScore') ELSE 0 END), 0) as personalBest
+      COALESCE(SUM(
+        CASE WHEN sport_type = 'archery' AND archery_data_json IS NOT NULL THEN
+          COALESCE(json_extract(archery_data_json, '$.archery.arrowsUsed'), json_extract(archery_data_json, '$.arrowsUsed'), 0)
+        ELSE 0 END
+      ), 0) as totalArrowsShot,
+      COALESCE(AVG(
+        CASE WHEN sport_type = 'archery' AND archery_data_json IS NOT NULL THEN
+          COALESCE(json_extract(archery_data_json, '$.archery.averageArrow'), json_extract(archery_data_json, '$.averageArrow'))
+        ELSE NULL END
+      ), 0) as averageScore,
+      COALESCE(MAX(
+        CASE WHEN sport_type = 'archery' AND archery_data_json IS NOT NULL THEN
+          COALESCE(json_extract(archery_data_json, '$.archery.totalScore'), json_extract(archery_data_json, '$.totalScore'), 0)
+        ELSE 0 END
+      ), 0) as personalBest,
+      COALESCE(SUM(
+        CASE WHEN completed_at_ms IS NOT NULL AND started_at_ms IS NOT NULL THEN
+          (completed_at_ms - started_at_ms) / 60000.0
+        ELSE 0 END
+      ), 0) as totalDuration,
+      COALESCE(SUM(
+        CASE WHEN sport_type = 'hiit' AND archery_data_json IS NOT NULL THEN
+          COALESCE(json_extract(archery_data_json, '$.hiit.intervals'), 0)
+        ELSE 0 END
+      ), 0) as totalHiitIntervals,
+      COALESCE(SUM(
+        CASE WHEN sport_type = 'hiit' AND archery_data_json IS NOT NULL THEN
+          COALESCE(json_extract(archery_data_json, '$.hiit.totalWorkTime'), 0)
+        ELSE 0 END
+      ), 0) as totalHiitWorkTime
     FROM sport_sessions
     WHERE uid = ? AND status = 'completed'
+    ${sportType ? 'AND sport_type = ?' : ''}
   `;
   const params: (string | number)[] = [oneWeekAgo, oneMonthAgo, uid];
-
   if (sportType) {
-    query += ' AND sport_type = ?';
     params.push(sportType);
   }
 
@@ -2781,6 +2809,9 @@ export const getSportStats = (
     totalArrowsShot: number;
     averageScore: number;
     personalBest: number;
+    totalDuration: number;
+    totalHiitIntervals: number;
+    totalHiitWorkTime: number;
   }, (string | number)[]>(query).get(...params);
 
   // Calculate streaks
@@ -2794,15 +2825,21 @@ export const getSportStats = (
 
   const streaks = calculateStreaks(sessions.map((s) => s.completedAt));
 
+  const hasArchery = sportType == null || sportType === 'archery';
+  const hasHiit = sportType == null || sportType === 'hiit';
+
   return {
     totalSessions: stats?.totalSessions ?? 0,
     thisWeekSessions: stats?.thisWeekSessions ?? 0,
     thisMonthSessions: stats?.thisMonthSessions ?? 0,
     currentStreak: streaks.current,
     longestStreak: streaks.longest,
-    totalArrowsShot: stats?.totalArrowsShot ?? 0,
-    averageScore: Math.round((stats?.averageScore ?? 0) * 100) / 100,
-    personalBest: stats?.personalBest ?? 0
+    totalDuration: Math.round((stats?.totalDuration ?? 0) * 10) / 10,
+    totalArrowsShot: hasArchery ? (stats?.totalArrowsShot ?? 0) : undefined,
+    averageScore: hasArchery ? Math.round((stats?.averageScore ?? 0) * 100) / 100 : undefined,
+    personalBest: hasArchery ? (stats?.personalBest ?? 0) : undefined,
+    totalHiitIntervals: hasHiit ? (stats?.totalHiitIntervals ?? 0) : undefined,
+    totalHiitWorkTime: hasHiit ? (stats?.totalHiitWorkTime ?? 0) : undefined,
   };
 };
 
