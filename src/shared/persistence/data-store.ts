@@ -451,6 +451,43 @@ const calculateLongestWorkoutStreak = (completedDayKeys: string[]): number => {
   return Math.max(longestStreak, currentStreak);
 };
 
+type CompletedDashboardActivitySummaryRow = {
+  completedAtMs: number;
+  totalDurationMin: number | null;
+};
+
+const listCompletedDashboardActivitySummaryRows = (
+  db: Database,
+  uid: string
+): CompletedDashboardActivitySummaryRow[] => {
+  return db.query<CompletedDashboardActivitySummaryRow, [string, string]>(`
+    SELECT completedAtMs, totalDurationMin
+    FROM (
+      SELECT
+        completed_at_ms as completedAtMs,
+        CAST(total_duration_min AS REAL) as totalDurationMin
+      FROM workout_sessions
+      WHERE uid = ?
+        AND completed_at_ms IS NOT NULL
+
+      UNION ALL
+
+      SELECT
+        completed_at_ms as completedAtMs,
+        CASE
+          WHEN started_at_ms IS NOT NULL AND completed_at_ms IS NOT NULL THEN
+            (completed_at_ms - started_at_ms) / 60000.0
+          ELSE NULL
+        END as totalDurationMin
+      FROM sport_sessions
+      WHERE uid = ?
+        AND status = 'completed'
+        AND completed_at_ms IS NOT NULL
+    )
+    ORDER BY completedAtMs DESC
+  `).all(uid, uid);
+};
+
 const roundWeight = (value: number): number => {
   return Math.round(value * 10) / 10;
 };
@@ -491,14 +528,25 @@ const listLeaderboardByPeriod = (
     position: number;
     display_name: string | null;
     avatar_url: string | null;
-  }, [number]>(`
+  }, [number, number]>(`
     WITH aggregated AS (
       SELECT
-        ws.uid AS uid,
+        combined.uid AS uid,
         COUNT(1) AS total_workouts
-      FROM workout_sessions ws
-      WHERE ws.completed_at_ms IS NOT NULL AND ws.completed_at_ms >= ?
-      GROUP BY ws.uid
+      FROM (
+        SELECT ws.uid AS uid
+        FROM workout_sessions ws
+        WHERE ws.completed_at_ms IS NOT NULL AND ws.completed_at_ms >= ?
+
+        UNION ALL
+
+        SELECT ss.uid AS uid
+        FROM sport_sessions ss
+        WHERE ss.status = 'completed'
+          AND ss.completed_at_ms IS NOT NULL
+          AND ss.completed_at_ms >= ?
+      ) combined
+      GROUP BY combined.uid
     ),
     ranked AS (
       SELECT
@@ -530,7 +578,7 @@ const listLeaderboardByPeriod = (
     FROM ranked
     LEFT JOIN user_profiles up ON up.uid = ranked.uid
     ORDER BY ranked.position ASC
-  `).all(periodStartMs);
+  `).all(periodStartMs, periodStartMs);
 
   const fullLeaderboard = rows.map((row) => ({
     userId: row.uid,
@@ -1390,6 +1438,7 @@ export const getCompetitiveLeaderboard = (
 };
 
 export const getDashboardData = (db: Database, uid: string): DashboardOutput => {
+  const completedDashboardActivities = listCompletedDashboardActivitySummaryRows(db, uid);
   const completedSessions = db.query<{
     id: string;
     routine_id: string | null;
@@ -1414,14 +1463,14 @@ export const getDashboardData = (db: Database, uid: string): DashboardOutput => 
   const currentDateKey = getDateKeyInAppTimeZone(Date.now());
   const startOfWeekDateKey = getStartOfWeekDateKey(currentDateKey);
   const startOfMonthDateKey = getStartOfMonthDateKey(currentDateKey);
-  const completedTimestamps = completedSessions.map((session) => session.completed_at_ms);
+  const completedTimestamps = completedDashboardActivities.map((activity) => activity.completedAtMs);
   const completedDayKeys = getCompletedSessionDayKeys(completedTimestamps);
-  const durations = completedSessions
-    .map((session) => session.total_duration_min)
+  const durations = completedDashboardActivities
+    .map((activity) => activity.totalDurationMin)
     .filter((duration): duration is number => typeof duration === 'number' && Number.isFinite(duration));
 
   const summary: DashboardSummaryOutput = {
-    totalWorkouts: completedSessions.length,
+    totalWorkouts: completedDashboardActivities.length,
     thisWeekWorkouts: completedTimestamps.filter((timestamp) => getDateKeyInAppTimeZone(timestamp) >= startOfWeekDateKey).length,
     thisMonthWorkouts: completedTimestamps.filter((timestamp) => getDateKeyInAppTimeZone(timestamp) >= startOfMonthDateKey).length,
     currentStreak: calculateCurrentWorkoutStreak(completedDayKeys, currentDateKey),
