@@ -66,7 +66,7 @@ describe('handleRestRoutes', () => {
         commandAtMs: now,
         title: 'title',
         body: 'body',
-        url: 'https://herculito.exloz.site/workouts',
+        url: 'https://herculito.exloz.co/workouts',
         tag: `rest-timer:${now}`
       })
     });

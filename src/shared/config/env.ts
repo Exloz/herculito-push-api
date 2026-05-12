@@ -33,7 +33,7 @@ const resolveClerkJwksUrl = (issuer: string): string => {
 const parseAllowedOrigins = (value: string | undefined): string[] => {
   if (!value) {
     return [
-      'https://herculito.exloz.site',
+      'https://herculito.exloz.co',
       'http://localhost:5173',
       'http://localhost:4173'
     ];

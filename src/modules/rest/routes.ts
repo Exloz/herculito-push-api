@@ -46,7 +46,7 @@ export const handleRestRoutes: AppRouteHandler = async (req, url, context, meta)
     const payload: PushPayload = {
       title: isNonEmptyString(body.title) ? body.title : '¡Descanso terminado!',
       body: isNonEmptyString(body.body) ? body.body : 'Continúa con tu entrenamiento.',
-      url: isNonEmptyString(body.url) ? body.url : 'https://herculito.exloz.site',
+      url: isNonEmptyString(body.url) ? body.url : 'https://herculito.exloz.co',
       tag: isNonEmptyString(body.tag) ? body.tag : 'rest-timer'
     };
 
