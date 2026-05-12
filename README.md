@@ -27,7 +27,7 @@ Implementado:
 
 Pendiente en el sistema completo (fuera de este repo):
 - Integración en el SPA (suscripción Push desde la PWA, Service Worker con handler de `push`, y llamadas a schedule/cancel solo en iOS).
-- Configurar DNS/Traefik/Dokploy para exponer esto como `https://api.herculito.exloz.site`.
+- Configurar DNS/Traefik/Dokploy para exponer esto como `https://api-herculito.exloz.co`.
 - Generar y cargar variables VAPID en el entorno.
 - Montar volumen persistente para la base SQLite.
 
@@ -42,7 +42,7 @@ Obligatorias:
 Opcionales:
 - `PORT`: por defecto `3000`.
 - `DATABASE_PATH`: por defecto `/data/push.sqlite`.
-- `ALLOWED_ORIGINS`: lista separada por comas para CORS. Por defecto permite `https://herculito.exloz.site` y `localhost`.
+- `ALLOWED_ORIGINS`: lista separada por comas para CORS. Por defecto permite `https://herculito.exloz.co` y `localhost`.
 - `CLERK_JWKS_URL`: si no se define, se usa `<CLERK_ISSUER>/.well-known/jwks.json`.
 - `CLERK_AUDIENCE`: audiences permitidos (CSV) para validar JWT de templates de Clerk.
 
@@ -172,7 +172,7 @@ Si `missingInClerk` queda vacio, todos los `uid` historicos con datos tienen mat
 
 - Desplegar como servicio separado.
 - Exponer el puerto interno `3000`.
-- Configurar host `api.herculito.exloz.site` hacia este servicio.
+- Configurar host `api-herculito.exloz.co` hacia este servicio.
 - Montar volumen persistente en `/data` para que `DATABASE_PATH=/data/push.sqlite` sobreviva reinicios.
 
 ## Limitaciones
